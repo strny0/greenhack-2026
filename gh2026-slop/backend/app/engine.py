@@ -16,6 +16,7 @@ import pandapower as pp  # noqa: E402
 
 from . import config  # noqa: E402
 from .data_loader import store  # noqa: E402
+from .forecast import forecast_store  # noqa: E402
 from .model import (  # noqa: E402
     Alert,
     ContingencyResult,
@@ -554,6 +555,237 @@ def run_n1(timestamp: str, limit: int | None = None) -> list[ContingencyResult]:
     # rank: non-converged (islanding) first, then by worst resulting loading
     results.sort(key=lambda r: (r.converged, -r.max_loading_pct))
     return results
+
+
+# --- forecast-vs-actual deviation triage ------------------------------------
+
+_actuals_cache: "OrderedDict[str, dict]" = OrderedDict()
+
+
+def attribution_actuals(timestamp: str) -> dict:
+    """Per-generator actual solar/wind output and per-region actual load, read
+    from the solved snapshot. Complements forecast.planned_at() for deviation.
+
+    (base_frame aggregates generation per *bus* only, so we read res_gen here to
+    recover per-generator values.) LRU-cached like the frame cache.
+    """
+    ts = store.nearest_timestamp(timestamp)
+    if ts in _actuals_cache:
+        _actuals_cache.move_to_end(ts)
+        return _actuals_cache[ts]
+
+    net = store.read_net(ts)
+    converged = _solve(net)
+    gen_p = net.res_gen["p_mw"] if converged and len(net.res_gen) else net.gen.get("p_mw")
+    name_by_idx = net.bus["name"].to_dict()
+
+    solar: dict[str, float] = {}
+    wind: dict[str, float] = {}
+    for idx, row in net.gen.iterrows():
+        if not row["in_service"]:
+            continue
+        name = str(row["name"])
+        p = float(gen_p.get(idx, 0.0)) if gen_p is not None else float(row["p_mw"])
+        if np.isnan(p):
+            p = 0.0
+        if name.startswith("solar"):
+            solar[name] = round(p, 2)
+        elif name.startswith("wind"):
+            wind[name] = round(p, 2)
+
+    load_by_region: dict[str, float] = {}
+    for _, row in net.load.iterrows():
+        if not row["in_service"]:
+            continue
+        bus = name_by_idx.get(int(row["bus"]))
+        region = store.bus_to_region.get(bus)
+        if region is None:
+            continue
+        p = float(row["p_mw"])
+        load_by_region[region] = load_by_region.get(region, 0.0) + (0.0 if np.isnan(p) else p)
+    load_by_region = {r: round(v, 2) for r, v in load_by_region.items()}
+
+    result = {"converged": converged, "solar": solar, "wind": wind, "load_by_region": load_by_region}
+    _actuals_cache[ts] = result
+    if len(_actuals_cache) > config.FRAME_CACHE_SIZE:
+        _actuals_cache.popitem(last=False)
+    return result
+
+
+def _pct(delta: float, base: float) -> float | None:
+    """delta as a percentage of a (planned) base; None when the base is ~0."""
+    return round(delta / base * 100, 1) if abs(base) > 1e-6 else None
+
+
+def assess_deviation(timestamp: str) -> dict:
+    """Compare the DA plan to the actual snapshot at `timestamp` and gather the
+    grid-security context needed to triage it. Pure data — the *verdict* (risk
+    tier / notify) is left to the agent, but a deterministic `safety_net` floor
+    is computed here so a real breach can never be silently suppressed.
+    """
+    ts = store.nearest_timestamp(timestamp)
+    planned = forecast_store.planned_at(ts)
+    actual = attribution_actuals(ts)
+
+    # per-generator deviations (Δ = actual − plan; negative = under-producing)
+    deviations: list[dict] = []
+    for kind, plan_map, act_map in (
+        ("solar", planned["solar"], actual["solar"]),
+        ("wind", planned["wind"], actual["wind"]),
+    ):
+        for gen, plan_mw in plan_map.items():
+            act_mw = act_map.get(gen, 0.0)
+            delta = act_mw - plan_mw
+            deviations.append(
+                {
+                    "kind": kind,
+                    "gen": gen,
+                    "bus": store.gen_to_bus.get(gen),
+                    "planned_mw": round(plan_mw, 2),
+                    "actual_mw": round(act_mw, 2),
+                    "delta_mw": round(delta, 2),
+                    "pct": _pct(delta, plan_mw),
+                }
+            )
+    deviations.sort(key=lambda d: -abs(d["delta_mw"]))
+
+    # system-level totals (include unmapped forecast series so totals stay honest)
+    def _sys(kind: str, unmapped_mw: float) -> dict:
+        plan_total = sum(planned[kind].values()) + unmapped_mw
+        act_total = sum(actual[kind].values())
+        delta = act_total - plan_total
+        return {
+            "planned_mw": round(plan_total, 1),
+            "actual_mw": round(act_total, 1),
+            "delta_mw": round(delta, 1),
+            "pct": _pct(delta, plan_total),
+        }
+
+    system = {
+        "solar": _sys("solar", planned["solar_unmapped_mw"]),
+        "wind": _sys("wind", planned["wind_unmapped_mw"]),
+    }
+
+    # per-region load deviation. The DA load forecast in this dataset carries a
+    # large *systematic* high baseline (~12-19% every hour), so a raw plan-vs-
+    # actual % would scream every hour. We remove that common-mode bias by
+    # scoring each region against the system-wide plan->actual ratio: a region
+    # tracking the global offset reads ~0; only a genuinely anomalous region
+    # (the actionable "where") stands out. Raw numbers are kept for transparency.
+    total_plan_load = sum(planned["load_by_region"].values())
+    total_act_load = sum(
+        actual["load_by_region"].get(r, 0.0) for r in planned["load_by_region"]
+    )
+    load_ratio = (total_act_load / total_plan_load) if total_plan_load > 1e-6 else 1.0
+    load_dev: list[dict] = []
+    for region, plan_mw in planned["load_by_region"].items():
+        act_mw = actual["load_by_region"].get(region, 0.0)
+        delta = act_mw - plan_mw
+        expected_mw = plan_mw * load_ratio  # what this region "should" be given the bias
+        anomaly_mw = act_mw - expected_mw
+        load_dev.append(
+            {
+                "region": region,
+                "planned_mw": round(plan_mw, 1),
+                "actual_mw": round(act_mw, 1),
+                "delta_mw": round(delta, 1),
+                "pct": _pct(delta, plan_mw),
+                "anomaly_mw": round(anomaly_mw, 1),  # bias-corrected (the alarm signal)
+                "anomaly_pct": _pct(anomaly_mw, expected_mw),
+            }
+        )
+    load_dev.sort(key=lambda d: -abs(d["anomaly_mw"]))
+
+    # grid impact, read off the same solved frame
+    frame = base_frame(ts)
+    s = frame.summary
+    alerts = build_alerts(frame)
+    breaches = [a for a in alerts if a.severity == "alert"]
+
+    # significance gate (drives conditional N-1 + weather)
+    # Significance is driven by RENEWABLE deviation only. The DA load forecast is
+    # structurally divergent from the snapshots here (different magnitude AND
+    # regional split), so it can't be a reliable alarm — and load-driven risk is
+    # already captured by the realized grid state (alerts / loading / balancing
+    # below). Renewable shortfall is the signal the forecast uniquely adds.
+    significant = (
+        abs(system["solar"]["delta_mw"]) >= config.DEV_SOLAR_MW
+        or abs(system["wind"]["delta_mw"]) >= config.DEV_WIND_MW
+    )
+    grid_stressed = (
+        (not s.converged) or s.n_alerts > 0 or s.max_loading_pct >= config.LINE_LOADING_WARN
+    )
+
+    # deterministic safety net — force a notification regardless of the agent
+    slack_over = abs(s.slack_mw) >= config.DEV_SLACK_LOAD_FRACTION * max(s.total_load_mw, 1.0)
+    force_reasons: list[str] = []
+    if not s.converged:
+        force_reasons.append("load flow did not converge")
+    if breaches:
+        force_reasons.append(f"{len(breaches)} active breach(es) (overload/voltage)")
+    if slack_over:
+        force_reasons.append(
+            f"balancing power {s.slack_mw:.0f} MW exceeds "
+            f"{config.DEV_SLACK_LOAD_FRACTION:.0%} of load"
+        )
+
+    # forward fragility — only when it's worth the cost
+    n1 = {"ran": False, "worst": []}
+    if significant or grid_stressed:
+        results = run_n1(ts, limit=config.N1_DEV_LIMIT)
+        n1 = {
+            "ran": True,
+            "worst": [
+                {
+                    "tripped": r.contingency_name,
+                    "converged": r.converged,
+                    "max_loading_pct": r.max_loading_pct,
+                    "n_overloads": r.n_overloads,
+                }
+                for r in results[:5]
+            ],
+        }
+
+    # does the agent need a cause check? (generation under plan => maybe weather)
+    solar_shortfall_mw = round(-system["solar"]["delta_mw"], 1)  # positive = under plan
+    wind_shortfall_mw = round(-system["wind"]["delta_mw"], 1)
+
+    return {
+        "timestamp": ts,
+        "system": system,
+        "worst_deviations": deviations,
+        "load_by_region": load_dev,
+        "grid": {
+            "converged": s.converged,
+            "total_generation_mw": s.total_generation_mw,
+            "total_load_mw": s.total_load_mw,
+            "balancing_mw": s.slack_mw,
+            "max_line_loading_pct": s.max_loading_pct,
+            "n_alerts": s.n_alerts,
+            "n_warnings": s.n_warnings,
+            "active_breaches": [
+                {"element_id": a.element_id, "message": a.message} for a in breaches[:8]
+            ],
+        },
+        "n1": n1,
+        "significant": significant,
+        "generation_shortfall": {"solar_mw": solar_shortfall_mw, "wind_mw": wind_shortfall_mw},
+        "safety_net": {"force_notify": bool(force_reasons), "reasons": force_reasons},
+        "data_quality": {
+            "unmapped_series": planned["unmapped"],
+            "units_warning": planned["units_warning"],
+            "missing_forecast_for_hour": planned["missing_ts"],
+            "load_forecast_actual_ratio": round(load_ratio, 3),
+            "load_note": (
+                "ADVISORY ONLY: the DA load forecast is structurally divergent from "
+                "the snapshot in this dataset (systematic high baseline AND a "
+                "different regional split), so per-region load deviation is NOT a "
+                "reliable alarm and does not drive significance. Real load-driven "
+                "risk shows up in the grid block (alerts / loading / balancing). "
+                "'anomaly_mw' is bias-corrected; treat it as weak context, not a breach."
+            ),
+        },
+    }
 
 
 # --- what-if scenarios -------------------------------------------------------

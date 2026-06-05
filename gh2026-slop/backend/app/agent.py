@@ -40,6 +40,7 @@ import anyio
 
 from . import config, engine, sandbox, weather
 from .data_loader import store
+from .gridstats import tools as _gst
 from .model import WhatIfRequest
 
 # `OpenAIChatModel` is the chat-completions class (works with third-party
@@ -71,7 +72,30 @@ dataset, say so plainly rather than guessing.
 the question is about contingencies or operator actions, and keep limits modest.
 - Round sensibly, flag uncertainty, and state clearly when the data does not \
 support an answer.
-- You are read-only: you advise, you do not switch equipment."""
+- For "is this unusual", "how does this compare to normal", "which days stood out", \
+or "did the forecast hold" questions, use the statistical tools (explain_hour, \
+loading_context, plan_adherence, interesting_days, deep_dive). They read from a \
+precomputed seasonal bundle — no pandapower call, fast. Prefer explain_hour \
+(lightweight) over deep_dive unless a full breakdown is explicitly requested.
+- When presenting statistical tool results, speak operationally — never quote \
+z-scores, σ values, or percentile ranks to the operator. Translate: a large z or \
+surprise_z → "significantly above/below forecast"; pct_rank 90/95/99 → "above its \
+normal range for this time of day"; off_plan: true → "the day ran off-plan". Use MW \
+deltas and % where they add clarity, but drop the statistical notation entirely unless \
+it is explicitly asked for.
+- You are read-only: you advise, you do not switch equipment.
+
+Plan deviation / periodic safety check: use forecast_deviation_triage. It compares \
+the day-ahead plan to what actually happened and bundles the grid-security context. \
+Produce a TRIAGE VERDICT, not a narrative:
+  • risk_tier (none/low/medium/high) and notify (page the operator?).
+  • Suppress (notify=false) only when risk is low AND the deviation is explainable \
+(e.g. a weather-driven solar dip) AND the grid is secure — then a brief "on plan / \
+no action" is enough.
+  • Medium-to-high risk → notify, leading with WHERE the deviation is (generator/bus \
+or region), its grid impact, and the recommended action.
+  • safety_net.force_notify=true is non-negotiable: you MUST notify even if you would \
+otherwise suppress. Judge load by the bias-corrected anomaly, not the raw gap."""
 
 SUGGESTED_QUESTIONS = [
     "What is the overall state of the grid right now?",
@@ -407,6 +431,44 @@ def what_if(
     }
 
 
+@agent.tool
+async def forecast_deviation_triage(ctx: RunContext[Deps], top_n: int = 8) -> dict:
+    """TRIAGE the grid against the day-ahead plan for the viewed hour. Use this for
+    "are we on plan / do I need to intervene?" and for the periodic safety check.
+
+    Returns, in one call: per-generator solar/wind plan-vs-actual deviation (Δ in
+    MW, ranked worst first; `bus` locates each), per-region load anomaly
+    (bias-corrected — read `anomaly_mw`, not raw `delta_mw`; see data_quality),
+    system totals, the grid-security state off the SAME snapshot (alerts, max line
+    loading, balancing power), an N-1 check when the deviation is significant, and
+    — when generation is materially under plan — a live weather cause-check.
+
+    Your job is to OUTPUT A TRIAGE VERDICT, not an explanation:
+      • risk_tier: none | low | medium | high
+      • notify: whether the operator should be paged
+    Suppress (notify=false) ONLY when risk is low AND the deviation is explainable
+    (e.g. weather-driven solar dip) AND the grid is secure. NON-NEGOTIABLE: if
+    `safety_net.force_notify` is true, you MUST notify regardless of your own read.
+    Lead with where the deviation is and the recommended action, kept terse."""
+    top_n = max(1, min(top_n, 30))
+    d = engine.assess_deviation(ctx.deps.timestamp)
+    # cause-check only when generation is materially under plan (weather is the
+    # usual culprit for a solar/wind shortfall) — keeps benign ticks cheap.
+    shortfall = d["generation_shortfall"]
+    if d["significant"] and (
+        shortfall["solar_mw"] >= config.DEV_SOLAR_MW or shortfall["wind_mw"] >= config.DEV_WIND_MW
+    ):
+        try:
+            wx = await weather.weather_overlay(None)
+            d["cause_hints"] = {"weather": {"summary": wx.get("summary"), "points": wx.get("points", [])[:6]}}
+        except Exception as e:  # noqa: BLE001
+            d["cause_hints"] = {"weather": {"error": f"unavailable: {e}"}}
+    else:
+        d["cause_hints"] = {"weather": {"ran": False, "reason": "no material generation shortfall"}}
+    d["worst_deviations"] = d["worst_deviations"][:top_n]
+    return d
+
+
 @agent.tool_plain
 async def weather_overlay() -> dict:
     """Live cloud cover & wind (Open-Meteo) at the largest solar hubs, with a
@@ -451,6 +513,83 @@ async def run_python(ctx: RunContext[Deps], code: str) -> dict:
     return await anyio.to_thread.run_sync(
         sandbox.run_user_code, code, ctx.deps.timestamp
     )
+# --- statistical / historical tools (read from precomputed GridStatsBundle) --
+
+
+@agent.tool
+def explain_hour(ctx: RunContext[Deps], timestamp: str | None = None) -> dict:
+    """Statistical anomaly context for one hour: system z-scores vs seasonal trend,
+    de-biased plan deviation per metric (load/solar/wind), top stressed branches vs
+    their p90–p99 normal band, 1-hour momentum, and a ready-to-inject summary_text.
+
+    Reach for this whenever the operator asks "was this hour unusual", "why was it
+    busy", "what were the anomalies", or anything about how a specific hour compares
+    to historical norms. Lightweight — prefer this over deep_dive for most questions.
+    Defaults to the currently-viewed hour when timestamp is omitted.
+
+    timestamp: ISO hour, e.g. "2024-09-13T18:00:00". Omit to use the viewed hour."""
+    return _gst.explain_hour(timestamp or ctx.deps.timestamp)
+
+
+@agent.tool
+def plan_adherence(ctx: RunContext[Deps], day: str | None = None) -> dict:
+    """How closely a calendar day matched the day-ahead plan (de-biased forecast error).
+
+    Returns per metric (load/solar/wind): mean |σ| over the day, the worst hour and
+    its signed σ, and a one-line verdict ("on plan" / "off plan: …"). Use for
+    "did this day go to plan", "how off-plan was the forecast", or "which metric had
+    the biggest surprise" questions. Defaults to the day of the currently-viewed hour.
+
+    day: calendar date, e.g. "2024-07-17". Omit to use the day of the viewed hour."""
+    return _gst.plan_adherence(day or ctx.deps.timestamp[:10])
+
+
+@agent.tool
+def loading_context(
+    ctx: RunContext[Deps], timestamp: str | None = None, top: int = 5
+) -> dict:
+    """Top-N branches by loading at one hour, each annotated with its statistical
+    normal band (p90/p95/p99 for this hour-of-day × workday type) and pct_rank.
+
+    Use for "is this line unusually loaded", "how does today's loading compare to
+    normal", or "which lines are above their typical range" questions. Complements
+    most_loaded_lines (which gives live ranked loadings) with the historical norm.
+    Defaults to the currently-viewed hour.
+
+    timestamp: ISO hour. Omit to use the viewed hour. top: branches to return (default 5)."""
+    return _gst.loading_context(timestamp or ctx.deps.timestamp, top)
+
+
+@agent.tool
+def interesting_days(
+    ctx: RunContext[Deps], start_date: str, end_date: str, n: int = 10
+) -> list[dict]:
+    """Rank the most anomalous grid days in a date window, scored by the largest
+    de-biased z-score across load/solar/wind/line-loading signals. Each day has one
+    clear driver, a score, z-score detail, and peak loading/load context.
+
+    Use for "which days in [period] were most unusual", "flag days worth reviewing",
+    or "what were the biggest events in Q3". This is the ONLY range tool — for a
+    single hour or day use explain_hour, loading_context, or plan_adherence instead.
+
+    start_date: inclusive start, e.g. "2024-09-01".
+    end_date:   inclusive end,   e.g. "2024-09-30".
+    n:          max days to return (default 10)."""
+    return _gst.interesting_days(start_date, end_date, n)
+
+
+@agent.tool
+def deep_dive(ctx: RunContext[Deps], timestamp: str | None = None) -> dict:
+    """Exhaustive statistical breakdown of one hour — verbose; call only on request.
+
+    Returns all system metrics (raw + z), full per-metric plan deviation
+    (forecast/actual/delta/σ), ALL branches at or above their p90 threshold, momentum
+    at 1h and 24h, and the full day plan-adherence context. Expensive context —
+    explain_hour and loading_context answer most questions; use this only when the
+    operator explicitly asks for a full breakdown or deep-dive analysis.
+
+    timestamp: ISO hour. Omit to use the viewed hour."""
+    return _gst.deep_dive(timestamp or ctx.deps.timestamp)
 
 
 # --- streaming runner --------------------------------------------------------
