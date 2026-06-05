@@ -63,14 +63,20 @@ export default function App() {
 
   if (error)
     return (
-      <div className="loading-overlay">
-        Backend unreachable: {error}. Start it with <code>&nbsp;cd backend &amp;&amp; ./run.sh</code>
+      <div className="flex h-screen items-center justify-center bg-background px-6 text-center text-muted-foreground">
+        Backend unreachable: {error}. Start it with{" "}
+        <code className="mx-1 rounded bg-muted px-1.5 py-0.5 text-foreground">cd backend &amp;&amp; ./run.sh</code>
       </div>
     );
-  if (!meta || !frame) return <div className="loading-overlay">Loading Grid Pulse…</div>;
+  if (!meta || !frame)
+    return (
+      <div className="flex h-screen items-center justify-center bg-background text-muted-foreground">
+        Loading Grid Pulse…
+      </div>
+    );
 
   return (
-    <div className="app">
+    <div className="flex h-screen flex-col bg-background text-foreground">
       <TopBar
         frame={frame}
         frames={frames}
@@ -82,8 +88,8 @@ export default function App() {
         playing={playing}
         togglePlay={() => setPlaying((p) => !p)}
       />
-      <div className="main">
-        <div className="map-wrap">
+      <div className="relative flex min-h-0 flex-1">
+        <div className="relative flex-1">
           <MapView
             frame={frame}
             meta={meta}
