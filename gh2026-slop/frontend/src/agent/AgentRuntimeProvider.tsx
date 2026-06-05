@@ -39,11 +39,17 @@ function messageText(m: ThreadMessage): string {
     .join("");
 }
 
-function makeAdapter(timestampRef: { current: string }): ChatModelAdapter {
+type Selection = { kind: "node" | "line"; id: string } | null;
+
+function makeAdapter(
+  timestampRef: { current: string },
+  selectionRef: { current: Selection },
+): ChatModelAdapter {
   return {
     async *run({ messages, abortSignal }) {
       const payload = {
         timestamp: timestampRef.current,
+        selection: selectionRef.current,
         messages: messages
           .filter((m) => m.role === "user" || m.role === "assistant")
           .map((m) => ({ role: m.role, content: messageText(m) })),
@@ -135,18 +141,22 @@ function makeAdapter(timestampRef: { current: string }): ChatModelAdapter {
 
 export function AgentRuntimeProvider({
   timestamp,
+  selection,
   children,
 }: {
   timestamp: string;
+  selection: Selection;
   children: ReactNode;
 }) {
-  // The adapter is created once; a ref lets it always read the *current*
-  // frame timestamp the operator is viewing without rebuilding the runtime.
+  // The adapter is created once; refs let it always read the *current* frame
+  // timestamp and map selection without rebuilding the runtime.
   const tsRef = useRef(timestamp);
   tsRef.current = timestamp;
+  const selRef = useRef<Selection>(selection);
+  selRef.current = selection;
 
   const adapterRef = useRef<ChatModelAdapter>();
-  if (!adapterRef.current) adapterRef.current = makeAdapter(tsRef);
+  if (!adapterRef.current) adapterRef.current = makeAdapter(tsRef, selRef);
 
   const runtime = useLocalRuntime(adapterRef.current);
   return (

@@ -133,6 +133,7 @@ async def weather_endpoint(timestamp: str | None = Query(None)) -> dict:
 class ChatRequest(BaseModel):
     messages: list[dict]
     timestamp: str
+    selection: dict | None = None  # {kind: "node"|"line", id} the operator has selected
 
 
 @app.post("/api/chat")
@@ -149,7 +150,7 @@ async def agent_stream(req: ChatRequest) -> StreamingResponse:
     """Tool-calling dispatcher agent. Streams NDJSON events (text deltas, tool
     calls, tool results) consumed by the assistant-ui custom runtime."""
     return StreamingResponse(
-        stream_agent(req.messages, req.timestamp),
+        stream_agent(req.messages, req.timestamp, req.selection),
         media_type="application/x-ndjson",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

@@ -111,6 +111,7 @@ export default function App() {
         <Sidebar
           frame={frame}
           meta={meta}
+          selected={selected}
           onFocus={focus}
           onClearFocus={clearFocus}
           onSelect={setSelected}
