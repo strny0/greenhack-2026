@@ -83,7 +83,7 @@ export default function App() {
     );
 
   return (
-    <div className="flex h-screen flex-col bg-background text-foreground">
+    <div className="flex h-[100dvh] flex-col bg-background text-foreground">
       <TopBar
         frame={frame}
         frames={frames}
@@ -97,8 +97,10 @@ export default function App() {
         mode={mode}
         onModeChange={setMode}
       />
-      <div className="relative flex min-h-0 flex-1">
-        <div className="relative flex-1">
+      {/* Mobile: stack the map above a collapsible chat/sidebar sheet.
+          Desktop (md+): map left, resizable sidebar on the right. */}
+      <div className="relative flex min-h-0 flex-1 flex-col md:flex-row">
+        <div className="relative min-h-0 flex-1">
           {mode === "map" ? (
             <MapView
               frame={frame}

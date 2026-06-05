@@ -42,7 +42,7 @@ export default function DetailPanel({ node, line, windowStartTs, windowCount, on
   const title = node?.name ?? line?.name ?? "";
 
   return (
-    <div className="absolute bottom-3 left-3 z-20 w-[340px] rounded-xl border bg-card/95 p-3.5 shadow-lg backdrop-blur">
+    <div className="absolute bottom-3 left-3 z-20 w-[calc(100%-1.5rem)] max-w-[340px] rounded-xl border bg-card/95 p-3.5 shadow-lg backdrop-blur">
       <button
         className="absolute right-2 top-2 text-muted-foreground transition-colors hover:text-foreground"
         onClick={onClose}

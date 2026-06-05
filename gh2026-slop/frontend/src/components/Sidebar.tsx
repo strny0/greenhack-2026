@@ -16,7 +16,23 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { ChevronDownIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
+
+/** Reactive media-query match (used to branch the desktop / mobile layout). */
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(() =>
+    typeof window !== "undefined" ? window.matchMedia(query).matches : true,
+  );
+  useEffect(() => {
+    const mql = window.matchMedia(query);
+    const onChange = () => setMatches(mql.matches);
+    onChange();
+    mql.addEventListener("change", onChange);
+    return () => mql.removeEventListener("change", onChange);
+  }, [query]);
+  return matches;
+}
 
 interface Props {
   frame: StateFrame;
@@ -90,7 +106,12 @@ const DEFAULT_WIDTH = 390;
 const WIDTH_KEY = "sidebar-width";
 
 export default function Sidebar({ frame, meta, selected, onFocus, onClearFocus, onSelect, onZoom }: Props) {
-  const [tab, setTab] = useState<Tab>("alerts");
+  // On phones the panel becomes a collapsible bottom sheet under the map; on
+  // desktop it's the resizable right rail. `mobileOpen` drives the sheet height.
+  const isDesktop = useMediaQuery("(min-width: 768px)");
+  // Default to Chat on mobile (the panel's primary use there); Alerts on desktop.
+  const [tab, setTab] = useState<Tab>(isDesktop ? "alerts" : "chat");
+  const [mobileOpen, setMobileOpen] = useState(false);
 
   // Operator-resizable panel. Width persists across reloads; the map area is
   // flex-1 and reflows around whatever width we land on.
@@ -179,18 +200,53 @@ export default function Sidebar({ frame, meta, selected, onFocus, onClearFocus, 
     // The runtime provider is mounted once, above the tab body, so the agent
     // conversation persists when the operator switches tabs.
     <AgentRuntimeProvider timestamp={frame.timestamp} selection={selected}>
-      <aside className="relative flex shrink-0 flex-col border-l bg-card" style={{ width }}>
-        {/* Drag handle on the left edge to resize the panel. */}
-        <div
-          onPointerDown={onResizeStart}
-          className="absolute -left-1 top-0 z-10 h-full w-2 cursor-col-resize select-none transition-colors hover:bg-primary/30"
-          title="Drag to resize"
-        />
+      <aside
+        className={cn(
+          "relative flex flex-col bg-card",
+          isDesktop
+            ? "h-full shrink-0 border-l"
+            : "w-full shrink-0 border-t",
+        )}
+        style={
+          isDesktop
+            ? { width }
+            : { height: mobileOpen ? "60dvh" : undefined }
+        }
+      >
+        {/* Desktop: drag handle on the left edge to resize the panel. */}
+        {isDesktop && (
+          <div
+            onPointerDown={onResizeStart}
+            className="absolute -left-1 top-0 z-10 h-full w-2 cursor-col-resize select-none transition-colors hover:bg-primary/30"
+            title="Drag to resize"
+          />
+        )}
+
+        {/* Mobile: grab bar that expands/collapses the bottom sheet. */}
+        {!isDesktop && (
+          <button
+            type="button"
+            onClick={() => setMobileOpen((o) => !o)}
+            aria-expanded={mobileOpen}
+            aria-label={mobileOpen ? "Collapse panel" : "Expand panel"}
+            className="flex w-full items-center justify-center border-b py-1.5 text-muted-foreground active:bg-accent"
+          >
+            <ChevronDownIcon
+              className={cn(
+                "size-4 transition-transform",
+                !mobileOpen && "rotate-180",
+              )}
+            />
+          </button>
+        )}
+
         <Tabs
           value={tab}
           onValueChange={(v) => {
             setTab(v as Tab);
             onClearFocus();
+            // tapping a tab on mobile also opens the sheet
+            if (!isDesktop) setMobileOpen(true);
           }}
           className="flex min-h-0 flex-1 flex-col gap-0"
         >
@@ -211,41 +267,50 @@ export default function Sidebar({ frame, meta, selected, onFocus, onClearFocus, 
             ))}
           </TabsList>
 
-          <TabsContent value="alerts" className="m-0 min-h-0 flex-1">
-            <ScrollArea className="h-full">
-              <div className="p-3">
-                <AlertsTab alerts={alerts} onPick={(id, kind) => { onFocus([id]); onSelect({ kind, id }); }} />
-              </div>
-            </ScrollArea>
-          </TabsContent>
+          {/* On mobile the tab body is hidden until the sheet is expanded, so a
+              collapsed panel is just the grab bar + tab strip under the map. */}
+          <div
+            className={cn(
+              "flex min-h-0 flex-1 flex-col",
+              !isDesktop && !mobileOpen && "hidden",
+            )}
+          >
+            <TabsContent value="alerts" className="m-0 min-h-0 flex-1">
+              <ScrollArea className="h-full">
+                <div className="p-3">
+                  <AlertsTab alerts={alerts} onPick={(id, kind) => { onFocus([id]); onSelect({ kind, id }); }} />
+                </div>
+              </ScrollArea>
+            </TabsContent>
 
-          <TabsContent value="n1" className="m-0 min-h-0 flex-1">
-            <ScrollArea className="h-full">
-              <div className="p-3">
-                <N1Tab ts={frame.timestamp} onFocus={onFocus} onSelect={onSelect} />
-              </div>
-            </ScrollArea>
-          </TabsContent>
+            <TabsContent value="n1" className="m-0 min-h-0 flex-1">
+              <ScrollArea className="h-full">
+                <div className="p-3">
+                  <N1Tab ts={frame.timestamp} onFocus={onFocus} onSelect={onSelect} />
+                </div>
+              </ScrollArea>
+            </TabsContent>
 
-          <TabsContent value="whatif" className="m-0 min-h-0 flex-1">
-            <ScrollArea className="h-full">
-              <div className="p-3">
-                <WhatIfTab frame={frame} onFocus={onFocus} onSelect={onSelect} />
-              </div>
-            </ScrollArea>
-          </TabsContent>
+            <TabsContent value="whatif" className="m-0 min-h-0 flex-1">
+              <ScrollArea className="h-full">
+                <div className="p-3">
+                  <WhatIfTab frame={frame} onFocus={onFocus} onSelect={onSelect} />
+                </div>
+              </ScrollArea>
+            </TabsContent>
 
-          <TabsContent value="weather" className="m-0 min-h-0 flex-1">
-            <ScrollArea className="h-full">
-              <div className="p-3">
-                <WeatherTab />
-              </div>
-            </ScrollArea>
-          </TabsContent>
+            <TabsContent value="weather" className="m-0 min-h-0 flex-1">
+              <ScrollArea className="h-full">
+                <div className="p-3">
+                  <WeatherTab />
+                </div>
+              </ScrollArea>
+            </TabsContent>
 
-          <TabsContent value="chat" className="m-0 min-h-0 flex-1">
-            <AgentChat grid={grid} />
-          </TabsContent>
+            <TabsContent value="chat" className="m-0 min-h-0 flex-1">
+              <AgentChat grid={grid} />
+            </TabsContent>
+          </div>
         </Tabs>
       </aside>
     </AgentRuntimeProvider>

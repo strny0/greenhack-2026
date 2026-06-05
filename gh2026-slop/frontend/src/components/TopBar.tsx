@@ -53,7 +53,7 @@ export default function TopBar({
 }: Props) {
   const s = frame.summary;
   return (
-    <header className="z-10 flex items-center gap-6 border-b bg-card px-4 py-2">
+    <header className="z-10 flex flex-wrap items-center gap-x-4 gap-y-2 border-b bg-card px-4 py-2">
       <div className="flex items-center gap-2.5">
         <span
           className="h-2.5 w-2.5 rounded-full bg-emerald-500"
@@ -61,7 +61,7 @@ export default function TopBar({
         />
         <div>
           <h1 className="text-base font-semibold tracking-wide">GRID&nbsp;PULSE</h1>
-          <div className="text-[11px] text-muted-foreground">
+          <div className="hidden text-[11px] text-muted-foreground sm:block">
             ČEPS · transmission situational awareness
           </div>
         </div>
@@ -96,7 +96,7 @@ export default function TopBar({
         </Button>
       </div>
 
-      <div className="flex flex-1 gap-5">
+      <div className="hidden flex-1 gap-5 lg:flex">
         <Kpi label="Generation" value={`${s.total_generation_mw.toLocaleString()} MW`} />
         <Kpi label="Load" value={`${s.total_load_mw.toLocaleString()} MW`} />
         <Kpi label="Balancing" value={`${s.slack_mw > 0 ? "+" : ""}${s.slack_mw} MW`} />
@@ -117,7 +117,7 @@ export default function TopBar({
         />
       </div>
 
-      <div className="flex min-w-[420px] items-center gap-3">
+      <div className="flex w-full items-center gap-3 md:w-auto md:min-w-[360px] md:flex-1 lg:min-w-[420px] lg:flex-none">
         <Button variant="outline" size="icon" onClick={togglePlay} title="Play / pause">
           {playing ? <Pause className="size-4" /> : <Play className="size-4" />}
         </Button>

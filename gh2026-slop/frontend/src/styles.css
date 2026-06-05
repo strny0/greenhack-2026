@@ -21,6 +21,23 @@ body {
   100% { box-shadow: 0 0 0 0 rgba(46, 204, 113, 0); }
 }
 
+/* Welcome heading "smooth" — gently sways/dances. */
+@keyframes smooth-dance {
+  0%   { transform: translateY(0) rotate(0deg); }
+  25%  { transform: translateY(-2px) rotate(-2.5deg); }
+  50%  { transform: translateY(0) rotate(0deg); }
+  75%  { transform: translateY(-2px) rotate(2.5deg); }
+  100% { transform: translateY(0) rotate(0deg); }
+}
+.smooth-shimmer {
+  display: inline-block;
+  transform-origin: 50% 100%;
+  animation: smooth-dance 2.4s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .smooth-shimmer { animation: none; }
+}
+
 /* MapLibre popups themed to match shadcn surfaces. */
 .maplibregl-popup-content {
   background: var(--popover);
