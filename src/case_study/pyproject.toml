@@ -1,0 +1,13 @@
+[project]
+name = "case-study"
+version = "0.1.0"
+requires-python = "==3.12.*"
+dependencies = [
+    "pandapower==2.14.10",
+    "pandas==2.2.3",
+    "numpy==1.26.4",
+    "numba==0.60.0",
+    "statsmodels>=0.14.0",
+    "tqdm>=4.66",
+    "pyarrow>=14",
+]
