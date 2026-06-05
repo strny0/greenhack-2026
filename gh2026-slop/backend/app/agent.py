@@ -59,6 +59,10 @@ Working style:
 - Decide which tool(s) answer the question, call them, then summarise.
 - Be concise and operational: lead with the answer, then a one-line reason.
 - Use line/bus identifiers exactly as the tools return them.
+- For "vs yesterday / last week / earlier today" or "what changed" questions, use \
+compare_to (24h = yesterday, 168h = last week) and element_history with hours_back; \
+summary_at inspects any specific hour. If a tool reports the time is outside the \
+dataset, say so plainly rather than guessing.
 - N-1 and what-if tools re-solve the load flow and are slower — use them only when \
 the question is about contingencies or operator actions, and keep limits modest.
 - Round sensibly, flag uncertainty, and state clearly when the data does not \
@@ -127,11 +131,7 @@ def _node_brief(n) -> dict:
     }
 
 
-@agent.tool
-def grid_summary(ctx: RunContext[Deps]) -> dict:
-    """System-wide summary for the hour being viewed: generation, load, balancing
-    power, losses, max line loading, and alert/warning counts."""
-    f = engine.base_frame(ctx.deps.timestamp)
+def _summary_dict(f) -> dict:
     s = f.summary
     return {
         "timestamp": f.timestamp,
@@ -145,6 +145,79 @@ def grid_summary(ctx: RunContext[Deps]) -> dict:
         "n_warnings": s.n_warnings,
         "n_buses": len(f.nodes),
         "n_branches": len(f.lines),
+    }
+
+
+@agent.tool
+def grid_summary(ctx: RunContext[Deps]) -> dict:
+    """System-wide summary for the hour being viewed: generation, load, balancing
+    power, losses, max line loading, and alert/warning counts."""
+    return _summary_dict(engine.base_frame(ctx.deps.timestamp))
+
+
+@agent.tool
+def summary_at(ctx: RunContext[Deps], timestamp: str) -> dict:
+    """Grid summary at an ARBITRARY hour (ISO, e.g. '2024-01-01T06:00:00'),
+    for comparing other times to the current view. Returns an error (rather than
+    silently clamping) if the hour is outside the dataset."""
+    if not store.in_range(timestamp):
+        lo, hi = store.bounds()
+        return {"error": f"{timestamp} is outside the dataset window ({lo} … {hi})."}
+    return _summary_dict(engine.base_frame(timestamp))
+
+
+@agent.tool
+def compare_to(ctx: RunContext[Deps], hours_ago: int = 24) -> dict:
+    """Compare the current hour to `hours_ago` hours earlier (24 = yesterday,
+    168 = last week): the change in each summary metric plus the branches whose
+    loading moved most. Use this for "vs yesterday / last week / earlier" type
+    questions. Errors if the earlier hour is before the dataset start."""
+    now_ts = ctx.deps.timestamp
+    past_ts = store.shift(now_ts, -abs(hours_ago))
+    if past_ts is None:
+        lo, _ = store.bounds()
+        return {
+            "error": (
+                f"{abs(hours_ago)}h before {now_ts} is before the dataset start "
+                f"({lo}); there is no earlier snapshot to compare against."
+            )
+        }
+    now = engine.base_frame(now_ts)
+    past = engine.base_frame(past_ts)
+    keys = (
+        "total_generation_mw",
+        "total_load_mw",
+        "external_balancing_mw",
+        "losses_mw",
+        "max_line_loading_pct",
+        "n_alerts",
+        "n_warnings",
+    )
+    now_s, past_s = _summary_dict(now), _summary_dict(past)
+    summary_change = {
+        k: {"now": now_s[k], "then": past_s[k], "delta": round(now_s[k] - past_s[k], 1)}
+        for k in keys
+    }
+    past_by_id = {l.id: l for l in past.lines}
+    line_changes = []
+    for l in now.lines:
+        p = past_by_id.get(l.id)
+        if p and l.loading_pct is not None and p.loading_pct is not None:
+            line_changes.append(
+                {
+                    "id": l.id,
+                    "now_pct": l.loading_pct,
+                    "then_pct": p.loading_pct,
+                    "delta_pp": round(l.loading_pct - p.loading_pct, 1),
+                }
+            )
+    line_changes.sort(key=lambda d: -abs(d["delta_pp"]))
+    return {
+        "now": now_ts,
+        "compared_to": past_ts,
+        "hours_ago": abs(hours_ago),
+        "summary_change": summary_change,
+        "biggest_line_changes": line_changes[:8],
     }
 
 
@@ -212,18 +285,24 @@ def element_history(
     element_id: str,
     kind: str = "line",
     metric: str = "loading",
-    count: int = 24,
+    hours_back: int = 24,
+    hours_fwd: int = 0,
 ) -> dict:
-    """Recent time-series for one element, starting at the viewed hour.
+    """Time-series for one element AROUND the viewed hour. `hours_back` covers
+    the past (24 = the last day, the default), `hours_fwd` the future; both are
+    hourly. Use hours_back to see how a value got to where it is now.
 
     kind="line" -> metric in {loading, p_from}; kind="node" -> metric in
-    {vm_pu, production, consumption, net}. `count` is the number of hourly points
-    (2-72)."""
+    {vm_pu, production, consumption, net}. `truncated_past`/`truncated_future`
+    in the result flag when the window hit the start/end of the dataset."""
     if kind not in ("line", "node"):
         return {"error": "kind must be 'line' or 'node'"}
-    count = max(2, min(count, 72))
-    return engine.element_timeseries(
-        element_id, kind, metric, ctx.deps.timestamp, count
+    hours_back = max(0, min(hours_back, 168))
+    hours_fwd = max(0, min(hours_fwd, 168))
+    if hours_back + hours_fwd == 0:
+        hours_back = 24
+    return engine.element_window(
+        element_id, kind, metric, ctx.deps.timestamp, hours_back, hours_fwd
     )
 
 
