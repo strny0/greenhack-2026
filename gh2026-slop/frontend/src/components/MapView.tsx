@@ -27,14 +27,14 @@ const STYLE: maplibregl.StyleSpecification = {
   sources: {
     carto: {
       type: "raster",
-      tiles: ["https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"],
+      tiles: ["https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png"],
       tileSize: 256,
       attribution: "© CARTO © OpenStreetMap contributors",
     },
   },
   layers: [
-    { id: "bg", type: "background", paint: { "background-color": "#0a0e16" } },
-    { id: "carto", type: "raster", source: "carto", paint: { "raster-opacity": 0.55 } },
+    { id: "bg", type: "background", paint: { "background-color": "#f5f6f8" } },
+    { id: "carto", type: "raster", source: "carto", paint: { "raster-opacity": 0.95 } },
   ],
 };
 
@@ -144,7 +144,7 @@ export default function MapView({ frame, meta, highlight, selected, onSelect }: 
         type: "line",
         source: "lines",
         filter: ["==", ["get", "hl"], 1],
-        paint: { "line-color": "#ffffff", "line-width": 12, "line-opacity": 0.45, "line-blur": 3 },
+        paint: { "line-color": "#ffd84d", "line-width": 12, "line-opacity": 0.65, "line-blur": 3 },
       });
       map.addLayer({
         id: "lines",
@@ -170,8 +170,8 @@ export default function MapView({ frame, meta, highlight, selected, onSelect }: 
         filter: ["==", ["get", "hl"], 1],
         paint: {
           "circle-radius": ["+", ["interpolate", ["linear"], ["get", "mag"], 0, 6, 2000, 18], 8],
-          "circle-color": "#ffffff",
-          "circle-opacity": 0.18,
+          "circle-color": "#ffd84d",
+          "circle-opacity": 0.55,
         },
       });
       map.addLayer({

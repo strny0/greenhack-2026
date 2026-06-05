@@ -140,7 +140,9 @@ def extract_frame(net, timestamp: str, converged: bool) -> StateFrame:
         is_slack = idx in slack_buses
         lo, hi = float(row["min_vm_pu"]), float(row["max_vm_pu"])
         lon, lat = proj.to_lonlat(
-            float(net.bus_geodata.at[idx, "x"]), float(net.bus_geodata.at[idx, "y"])
+            str(row.get("zone", "")),
+            float(net.bus_geodata.at[idx, "x"]),
+            float(net.bus_geodata.at[idx, "y"]),
         )
         nodes.append(
             Node(

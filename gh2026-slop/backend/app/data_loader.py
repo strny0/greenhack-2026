@@ -69,13 +69,27 @@ class DataStore:
     def _init_projector(self) -> None:
         net = self.read_net(self._timestamps[0])
         geo = net.bus_geodata
-        self._projector = GeoProjector(list(geo.x), list(geo.y))
-        # cache bus_name -> (lon, lat)
-        for idx, row in net.bus.iterrows():
+        bus = net.bus
+
+        # Group bus geodata by region (pandapower stores it on net.bus.zone).
+        per_region_xy: dict[str, list[tuple[float, float]]] = {}
+        bus_region: dict[str, str] = {}
+        for idx, row in bus.iterrows():
             x = float(geo.at[idx, "x"])
             y = float(geo.at[idx, "y"])
-            lon, lat = self._projector.to_lonlat(x, y)
             name = str(row["name"])
+            region = str(row.get("zone", "")) or "r1"
+            bus_region[name] = region
+            per_region_xy.setdefault(region, []).append((x, y))
+
+        self._projector = GeoProjector(per_region_xy)
+
+        # cache bus_name -> (lon, lat) using the region's sub-projection
+        for idx, row in bus.iterrows():
+            name = str(row["name"])
+            x = float(geo.at[idx, "x"])
+            y = float(geo.at[idx, "y"])
+            lon, lat = self._projector.to_lonlat(bus_region[name], x, y)
             self.bus_lonlat[name] = (round(lon, 5), round(lat, 5))
             self.bus_sld[name] = (round(x, 2), round(y, 2))
 
