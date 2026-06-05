@@ -4,6 +4,7 @@ import type { ContingencyResult, Meta, StateFrame, WeatherPoint, WhatIfResponse 
 import type { Selection } from "./MapView";
 import AgentChat from "./AgentChat";
 import { AgentRuntimeProvider } from "../agent/AgentRuntimeProvider";
+import type { GridRefCtx } from "../agent/grid-refs";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Slider } from "@/components/ui/slider";
@@ -104,6 +105,23 @@ export default function Sidebar({ frame, meta, onFocus, onClearFocus, onSelect }
 
   const nAlerts = alerts.filter((a) => a.sev === "alert").length;
 
+  // Wiring for the clickable element chips the agent emits in chat. Reuses the
+  // same focus/select the rest of the sidebar uses; `has` enforces exact-match
+  // (only real elements in the current frame become chips).
+  const grid = useMemo<GridRefCtx>(
+    () => ({
+      pick: (kind, id) => {
+        onFocus([id]);
+        onSelect({ kind, id });
+      },
+      has: (kind, id) =>
+        kind === "node"
+          ? frame.nodes.some((n) => n.id === id)
+          : frame.lines.some((l) => l.id === id),
+    }),
+    [frame, onFocus, onSelect],
+  );
+
   const TABS: [Tab, string, number][] = [
     ["alerts", "Alerts", nAlerts],
     ["n1", "N-1", 0],
@@ -175,7 +193,7 @@ export default function Sidebar({ frame, meta, onFocus, onClearFocus, onSelect }
           </TabsContent>
 
           <TabsContent value="chat" className="m-0 min-h-0 flex-1">
-            <AgentChat />
+            <AgentChat grid={grid} />
           </TabsContent>
         </Tabs>
       </aside>
