@@ -1,6 +1,13 @@
 import { useEffect, useRef } from "react";
 import maplibregl from "maplibre-gl";
 import type { Meta, StateFrame } from "../types";
+import {
+  LOADING_STOPS,
+  OUT_OF_SERVICE_COLOR,
+  CASING_COLOR,
+  NODE_TYPE_COLOR,
+  STATE_STROKE_COLOR,
+} from "./styling";
 
 export interface Selection {
   kind: "node" | "line";
@@ -80,22 +87,13 @@ function buildGeo(frame: StateFrame, highlight: Set<string>) {
 const loadingColor: maplibregl.ExpressionSpecification = [
   "case",
   ["<", ["get", "loading"], 0],
-  "#5a6677",
+  OUT_OF_SERVICE_COLOR,
   [
     "interpolate",
     ["linear"],
     ["get", "loading"],
-    0,
-    "#2ecc71",
-    50,
-    "#9acd32",
-    75,
-    "#f5b915",
-    90,
-    "#ff7a45",
-    110,
-    "#ff4d4f",
-  ],
+    ...LOADING_STOPS.flatMap((s) => [s.pct, s.color]),
+  ] as any,
 ];
 
 export default function MapView({ frame, meta, highlight, selected, onSelect }: Props) {
@@ -131,7 +129,7 @@ export default function MapView({ frame, meta, highlight, selected, onSelect }: 
         type: "line",
         source: "lines",
         paint: {
-          "line-color": "#05080f",
+          "line-color": CASING_COLOR,
           "line-width": [
             "case",
             ["==", ["get", "kind"], "trafo"],
@@ -185,13 +183,10 @@ export default function MapView({ frame, meta, highlight, selected, onSelect }: 
           "circle-color": [
             "match",
             ["get", "type"],
-            "generation",
-            "#2f81f7",
-            "load",
-            "#e8833a",
-            "slack",
-            "#b07cff",
-            "#6b7a90",
+            "generation", NODE_TYPE_COLOR.generation,
+            "load", NODE_TYPE_COLOR.load,
+            "slack", NODE_TYPE_COLOR.slack,
+            NODE_TYPE_COLOR.substation,
           ],
           "circle-stroke-width": [
             "case",
@@ -204,13 +199,10 @@ export default function MapView({ frame, meta, highlight, selected, onSelect }: 
           "circle-stroke-color": [
             "match",
             ["get", "state"],
-            "alert",
-            "#ff4d4f",
-            "warn",
-            "#f5b915",
-            "offline",
-            "#5a6677",
-            "#0a0e16",
+            "alert", STATE_STROKE_COLOR.alert,
+            "warn", STATE_STROKE_COLOR.warn,
+            "offline", STATE_STROKE_COLOR.offline,
+            STATE_STROKE_COLOR.ok,
           ],
         },
       });

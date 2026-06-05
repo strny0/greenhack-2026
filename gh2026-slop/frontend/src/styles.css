@@ -31,3 +31,22 @@ body {
   padding: 6px 8px;
 }
 .maplibregl-popup-tip { display: none; }
+
+/* Single-line diagram view (SldView). Light canvas with a dark-themed
+   floating tooltip; pan/zoom cursors set inline by the component. */
+.sld-wrap { position: absolute; inset: 0; background: #f5f6f8; }
+.sld-svg { width: 100%; height: 100%; display: block; cursor: grab; }
+.sld-svg.dragging { cursor: grabbing; }
+.sld-tooltip {
+  position: absolute;
+  pointer-events: none;
+  background: var(--popover);
+  color: var(--popover-foreground);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  padding: 6px 8px;
+  white-space: nowrap;
+  transform: translate(8px, 8px);
+  z-index: 4;
+}

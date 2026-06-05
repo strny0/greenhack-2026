@@ -11,6 +11,8 @@ interface Props {
   setIdx: (i: number) => void;
   playing: boolean;
   togglePlay: () => void;
+  mode: "map" | "sld";
+  onModeChange: (m: "map" | "sld") => void;
 }
 
 const fmt = (ts: string) =>
@@ -39,7 +41,16 @@ function Kpi({ label, value, tone }: { label: string; value: string; tone?: "bad
   );
 }
 
-export default function TopBar({ frame, frames, idx, setIdx, playing, togglePlay }: Props) {
+export default function TopBar({
+  frame,
+  frames,
+  idx,
+  setIdx,
+  playing,
+  togglePlay,
+  mode,
+  onModeChange,
+}: Props) {
   const s = frame.summary;
   return (
     <header className="z-10 flex items-center gap-6 border-b bg-card px-4 py-2">
@@ -54,6 +65,35 @@ export default function TopBar({ frame, frames, idx, setIdx, playing, togglePlay
             ČEPS · transmission situational awareness
           </div>
         </div>
+      </div>
+
+      <div
+        className="flex overflow-hidden rounded-md border"
+        role="tablist"
+        aria-label="Visualization mode"
+      >
+        <Button
+          role="tab"
+          aria-selected={mode === "map"}
+          variant={mode === "map" ? "default" : "ghost"}
+          size="sm"
+          className="rounded-none border-0"
+          onClick={() => onModeChange("map")}
+          title="Map view"
+        >
+          🗺 Map
+        </Button>
+        <Button
+          role="tab"
+          aria-selected={mode === "sld"}
+          variant={mode === "sld" ? "default" : "ghost"}
+          size="sm"
+          className="rounded-none border-0"
+          onClick={() => onModeChange("sld")}
+          title="Schematic (single-line diagram) view"
+        >
+          ▦ Schematic
+        </Button>
       </div>
 
       <div className="flex flex-1 gap-5">

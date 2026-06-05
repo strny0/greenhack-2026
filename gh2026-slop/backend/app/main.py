@@ -55,6 +55,8 @@ def meta() -> dict:
             "lat_min": config.CZ_LAT_MIN,
             "lat_max": config.CZ_LAT_MAX,
         },
+        "sld_coords": store.bus_sld,
+        "sld_bbox": store.sld_bbox,
         "thresholds": {
             "line_loading_warn": config.LINE_LOADING_WARN,
             "line_loading_alert": config.LINE_LOADING_ALERT,
