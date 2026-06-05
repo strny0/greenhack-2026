@@ -17,6 +17,7 @@ import {
   ToolGroupTrigger,
 } from "@/components/assistant-ui/tool-group";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
+import { ToolCallView, hasToolView } from "@/agent/tool-views";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -278,7 +279,10 @@ const AssistantMessage: FC = () => {
               case "reasoning":
                 return <Reasoning {...part} />;
               case "tool-call":
-                return part.toolUI ?? <ToolFallback {...part} />;
+                if (part.toolUI) return part.toolUI;
+                if (hasToolView(part.toolName))
+                  return <ToolCallView {...part} />;
+                return <ToolFallback {...part} />;
               case "indicator":
                 return (
                   <span
