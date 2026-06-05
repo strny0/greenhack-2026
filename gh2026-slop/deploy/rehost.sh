@@ -21,6 +21,12 @@ HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8099}"
 LOG="$BACKEND/uvicorn.log"
 
+# Extracted ČEPS dataset's inner `data/` dir. config.py's default path doesn't
+# exist on this host, so point GRID_DATA_DIR at the real location (repo-root
+# dataset/data). Override GRID_DATA_DIR if the dataset lives elsewhere.
+REPO_ROOT="$(cd "$APP/.." && pwd)"
+export GRID_DATA_DIR="${GRID_DATA_DIR:-$REPO_ROOT/dataset/data}"
+
 cyan() { printf '\033[36m==> %s\033[0m\n' "$*"; }
 
 # --- 1. pull -----------------------------------------------------------------
@@ -61,6 +67,13 @@ if [ -n "$pids" ]; then
   sleep 1
   kill -9 $pids 2>/dev/null || true
 fi
+
+if [ ! -d "$GRID_DATA_DIR/snapshots" ]; then
+  printf '\033[31m    !! dataset not found: %s/snapshots\033[0m\n' "$GRID_DATA_DIR" >&2
+  printf '\033[31m       set GRID_DATA_DIR or extract the dataset.\033[0m\n' >&2
+  exit 1
+fi
+cyan "using dataset GRID_DATA_DIR=$GRID_DATA_DIR"
 
 cyan "starting uvicorn on $HOST:$PORT"
 cd "$BACKEND"
