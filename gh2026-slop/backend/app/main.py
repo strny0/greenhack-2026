@@ -11,10 +11,12 @@ warnings.filterwarnings("ignore")
 
 from fastapi import FastAPI, HTTPException, Query  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from fastapi.responses import StreamingResponse  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
 from . import config, engine, weather  # noqa: E402
-from .chat import SUGGESTED_QUESTIONS, chat  # noqa: E402
+from .agent import SUGGESTED_QUESTIONS, stream_agent  # noqa: E402
+from .chat import chat  # noqa: E402  (legacy one-shot grounded chat)
 from .data_loader import store  # noqa: E402
 from .model import StateFrame, WhatIfRequest, WhatIfResponse  # noqa: E402
 
@@ -135,4 +137,19 @@ class ChatRequest(BaseModel):
 
 @app.post("/api/chat")
 async def chat_endpoint(req: ChatRequest) -> dict:
+    """Legacy one-shot grounded chat (kept for reference / fallback)."""
     return await chat(req.messages, req.timestamp)
+
+
+# --- agentic harness ---------------------------------------------------------
+
+
+@app.post("/api/agent/stream")
+async def agent_stream(req: ChatRequest) -> StreamingResponse:
+    """Tool-calling dispatcher agent. Streams NDJSON events (text deltas, tool
+    calls, tool results) consumed by the assistant-ui custom runtime."""
+    return StreamingResponse(
+        stream_agent(req.messages, req.timestamp),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

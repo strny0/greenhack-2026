@@ -2,6 +2,8 @@ import { useMemo, useState } from "react";
 import { api } from "../api";
 import type { ContingencyResult, Meta, StateFrame, WeatherPoint, WhatIfResponse } from "../types";
 import type { Selection } from "./MapView";
+import AgentChat from "./AgentChat";
+import { AgentRuntimeProvider } from "../agent/AgentRuntimeProvider";
 
 interface Props {
   frame: StateFrame;
@@ -37,6 +39,10 @@ export default function Sidebar({ frame, meta, onFocus, onClearFocus, onSelect }
   const nAlerts = alerts.filter((a) => a.sev === "alert").length;
 
   return (
+    // The runtime provider is mounted once, above the tab body, so the agent
+    // conversation persists when the operator switches tabs. Only the <Thread>
+    // *view* (inside <AgentChat/>) mounts/unmounts with the tab.
+    <AgentRuntimeProvider timestamp={frame.timestamp}>
     <div className="sidebar">
       <div className="tabs">
         {([
@@ -59,9 +65,10 @@ export default function Sidebar({ frame, meta, onFocus, onClearFocus, onSelect }
         {tab === "n1" && <N1Tab ts={frame.timestamp} onFocus={onFocus} onSelect={onSelect} />}
         {tab === "whatif" && <WhatIfTab frame={frame} onFocus={onFocus} onSelect={onSelect} />}
         {tab === "weather" && <WeatherTab />}
-        {tab === "chat" && <ChatTab ts={frame.timestamp} meta={meta} />}
+        {tab === "chat" && <AgentChat />}
       </div>
     </div>
+    </AgentRuntimeProvider>
   );
 }
 
@@ -254,50 +261,3 @@ function WeatherTab() {
   );
 }
 
-function ChatTab({ ts, meta }: { ts: string; meta: Meta }) {
-  const [log, setLog] = useState<{ role: string; content: string }[]>([]);
-  const [input, setInput] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  const send = async (text: string) => {
-    if (!text.trim() || busy) return;
-    const next = [...log, { role: "user", content: text }];
-    setLog(next);
-    setInput("");
-    setBusy(true);
-    try {
-      const r = await api.chat(ts, next);
-      setLog([...next, { role: "assistant", content: r.reply }]);
-    } catch (e: any) {
-      setLog([...next, { role: "assistant", content: "Error: " + e }]);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="chat">
-      <div className="chat-log">
-        {log.length === 0 && <div className="note">Ask the dispatcher assistant about the current grid state. Answers are grounded in the live snapshot.</div>}
-        {log.map((m, i) => (
-          <div key={i} className={"msg " + m.role}>{m.content}</div>
-        ))}
-        {busy && <div className="msg assistant">…</div>}
-      </div>
-      <div className="chat-suggestions">
-        {meta.suggested_questions.slice(0, 5).map((q) => (
-          <span key={q} className="chip" onClick={() => send(q)}>{q}</span>
-        ))}
-      </div>
-      <div className="chat-input">
-        <input
-          value={input}
-          placeholder="Ask about the grid…"
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && send(input)}
-        />
-        <button className="btn primary" onClick={() => send(input)} disabled={busy}>Send</button>
-      </div>
-    </div>
-  );
-}
