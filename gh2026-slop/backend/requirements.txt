@@ -10,3 +10,11 @@ openai>=2.29.0                      # raised from 1.59.6 — pydantic-ai-slim 1.
 python-dotenv==1.0.1
 pydantic>=2.12.0,<3                  # raised from 2.10.4 — pydantic-ai-slim 1.106 needs >=2.12
 pydantic-ai-slim[openai]==1.106.0   # agentic harness: tool-calling loop + streaming
+
+# gridstats (historical/statistical layer) — offline build + bundle serving
+statsmodels>=0.14   # STL seasonal decomposition for anomaly residuals
+tqdm>=4.66          # progress bar for the one-time snapshot scan
+pyarrow>=14         # parquet read/write for the precomputed target/ bundle
+
+# dev/test
+pytest>=8           # gridstats context-insert tests (app/gridstats/tests)
