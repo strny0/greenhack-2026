@@ -14,6 +14,7 @@ import { CheckIcon, CopyIcon } from "lucide-react";
 
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { GridRefLink, rehypeGridRefs } from "@/agent/grid-refs";
+import { highlightPython } from "@/agent/python-highlight";
 import { cn } from "@/lib/utils";
 
 const MarkdownTextImpl = () => {
@@ -225,8 +226,16 @@ const defaultComponents = memoizeMarkdownComponents({
       {...props}
     />
   ),
-  code: function Code({ className, ...props }) {
+  code: function Code({ className, children, ...props }) {
     const isCodeBlock = useIsMarkdownCodeBlock();
+    // Highlight Python fences (```python / ```py). The agent only writes
+    // Python, so bare ``` blocks are treated as Python too; other languages and
+    // inline code render verbatim.
+    const lang = /\blanguage-(\w+)/.exec(className ?? "")?.[1];
+    const isPython =
+      isCodeBlock &&
+      typeof children === "string" &&
+      (lang === undefined || lang === "python" || lang === "py");
     return (
       <code
         className={cn(
@@ -235,7 +244,9 @@ const defaultComponents = memoizeMarkdownComponents({
           className,
         )}
         {...props}
-      />
+      >
+        {isPython ? highlightPython(children as string) : children}
+      </code>
     );
   },
   CodeHeader,

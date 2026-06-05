@@ -5,12 +5,17 @@ import {
   ActivityIcon,
   ChevronDownIcon,
   CircleIcon,
+  Code2Icon,
   GaugeIcon,
   ListOrderedIcon,
   LoaderIcon,
+  LocateFixedIcon,
   SearchIcon,
+  TableIcon,
+  TerminalIcon,
   TriangleAlertIcon,
   WaypointsIcon,
+  WrenchIcon,
   type LucideIcon,
 } from "lucide-react";
 import type {
@@ -25,6 +30,7 @@ import {
 import { cn } from "@/lib/utils";
 import { loadingColor, NODE_TYPE_COLOR, STATE_STROKE_COLOR } from "@/components/styling";
 import { GridRefContext, type GridKind } from "@/agent/grid-refs";
+import { highlightPython } from "@/agent/python-highlight";
 
 /**
  * Domain-aware renderers for the dispatcher agent's tool calls.
@@ -65,33 +71,58 @@ function signed(mw: number | null | undefined): string {
 
 // --- shared primitives -------------------------------------------------------
 
-/** Clickable element id that focuses + selects the element on the map. */
+/**
+ * Clickable element id. Single click focuses + selects the element on the map;
+ * double-click (or the reticle button) additionally flies the camera to it.
+ */
 function ElementChip({ id, children }: { id: string; children?: ReactNode }) {
   const ctx = useContext(GridRefContext);
   const kind = kindOf(id);
   const dot = kind === "node" ? "bg-sky-400" : "bg-emerald-400";
   const interactive = ctx?.has(kind, id);
-  const className = cn(
-    "mx-px inline-flex items-center gap-1 rounded border px-1.5 py-px align-baseline font-mono text-[0.82em]",
-    "border-border bg-muted/60 text-foreground",
-    interactive && "cursor-pointer transition-colors hover:border-ring hover:bg-accent",
-  );
   const inner = (
     <>
       <span className={cn("inline-block size-1.5 shrink-0 rounded-full", dot)} />
       {children ?? id}
     </>
   );
-  if (!interactive) return <span className={className}>{inner}</span>;
+  if (!interactive)
+    return (
+      <span
+        className={cn(
+          "mx-px inline-flex items-center gap-1 rounded border px-1.5 py-px align-baseline font-mono text-[0.82em]",
+          "border-border bg-muted/60 text-foreground",
+        )}
+      >
+        {inner}
+      </span>
+    );
   return (
-    <button
-      type="button"
-      onClick={() => ctx!.pick(kind, id)}
-      title={`Show ${id} on the map`}
-      className={className}
+    <span
+      onDoubleClick={() => ctx!.jump(kind, id)}
+      className={cn(
+        "mx-px inline-flex items-center gap-1 rounded border pr-0.5 pl-1.5 align-baseline font-mono text-[0.82em] transition-colors",
+        "border-border bg-muted/60 text-foreground hover:border-ring hover:bg-accent",
+      )}
     >
-      {inner}
-    </button>
+      <button
+        type="button"
+        onClick={() => ctx!.pick(kind, id)}
+        title={`Show ${id} on the map (double-click to zoom)`}
+        className="inline-flex cursor-pointer items-center gap-1 py-px"
+      >
+        {inner}
+      </button>
+      <button
+        type="button"
+        onClick={() => ctx!.jump(kind, id)}
+        title={`Zoom to ${id} on the map`}
+        aria-label={`Zoom to ${id} on the map`}
+        className="text-muted-foreground hover:text-foreground inline-flex cursor-pointer items-center rounded p-0.5 transition-colors"
+      >
+        <LocateFixedIcon className="size-3" />
+      </button>
+    </span>
   );
 }
 
@@ -301,8 +332,15 @@ type ToolView = {
   /** Friendly label shown while the call is still running. */
   title: string;
   /** One-line summary for the collapsed header (null while loading). */
-  summary: (r: any) => ReactNode;
-  Detail: (p: { result: any }) => JSX.Element;
+  summary: (r: any, args?: any) => ReactNode;
+  Detail: (p: { result: any; args: any }) => JSX.Element;
+  /**
+   * When true, the result carrying an `error` field is NOT treated as a hard
+   * failure by the entry point — the view renders it itself (used by
+   * run_python, whose envelope reports script errors as data alongside the
+   * input we still want to show).
+   */
+  ownErrors?: boolean;
 };
 
 const SectionGrid = ({ children }: { children: ReactNode }) => (
@@ -314,7 +352,178 @@ const ACCENT = {
   rank: "text-violet-500",
   topo: "text-emerald-500",
   history: "text-amber-500",
+  code: "text-cyan-500",
 } as const;
+
+// --- run_python: code-interpreter rendering ---------------------------------
+
+/** Branch/bus ids that should become clickable map chips inside a result cell. */
+const ID_RE = /^(bus_|branch_|line_|trafo)/;
+
+function fmtCell(v: unknown): ReactNode {
+  if (v == null) return <span className="text-muted-foreground">–</span>;
+  if (typeof v === "boolean") return v ? "true" : "false";
+  if (typeof v === "number") {
+    return Number.isInteger(v)
+      ? v.toLocaleString()
+      : v.toLocaleString(undefined, { maximumFractionDigits: 4 });
+  }
+  if (typeof v === "string") {
+    return ID_RE.test(v) ? <ElementChip id={v} /> : v;
+  }
+  return JSON.stringify(v);
+}
+
+/** The script the agent ran (the tool input). */
+function CodeBlock({ code }: { code?: string }) {
+  if (!code) return null;
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-muted-foreground flex items-center gap-1 text-[0.7rem] uppercase tracking-wide">
+        <Code2Icon className="size-3" /> Script
+      </span>
+      <pre className="border-border/60 max-h-56 overflow-auto rounded-md border bg-muted/50 p-2.5 font-mono text-[0.72rem] leading-relaxed">
+        {highlightPython(code.trim())}
+      </pre>
+    </div>
+  );
+}
+
+/** A DataFrame result rendered as an actual (capped) table. */
+function DataFrameTable({ df }: { df: any }) {
+  const cols: string[] = Array.isArray(df.columns) ? df.columns : [];
+  const rows: any[] = Array.isArray(df.preview) ? df.preview : [];
+  const [nrows, ncols] = Array.isArray(df.shape) ? df.shape : [rows.length, cols.length];
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-muted-foreground flex items-center gap-1 text-[0.7rem] uppercase tracking-wide">
+        <TableIcon className="size-3" /> {nrows} × {ncols} table
+      </span>
+      <div className="border-border/60 max-h-72 overflow-auto rounded-md border">
+        <table className="w-full border-collapse text-[0.72rem]">
+          <thead className="bg-muted/70 sticky top-0">
+            <tr>
+              {cols.map((c) => (
+                <th
+                  key={c}
+                  className="border-border/60 border-b px-2 py-1 text-left font-medium whitespace-nowrap"
+                >
+                  {c}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="font-mono tabular-nums">
+            {rows.map((row, i) => (
+              <tr key={i} className="odd:bg-muted/20">
+                {cols.map((c) => (
+                  <td
+                    key={c}
+                    className="border-border/40 border-b px-2 py-1 whitespace-nowrap"
+                  >
+                    {fmtCell(row[c])}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {df.truncated && (
+        <span className="text-muted-foreground text-[0.7rem]">
+          showing first {rows.length} of {nrows} rows
+        </span>
+      )}
+    </div>
+  );
+}
+
+/** A Series result as a 2-column key → value table. */
+function SeriesTable({ s }: { s: any }) {
+  const entries = Object.entries(s.preview ?? {});
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-muted-foreground flex items-center gap-1 text-[0.7rem] uppercase tracking-wide">
+        <TableIcon className="size-3" /> series{s.name ? ` · ${s.name}` : ""} · {s.length}
+      </span>
+      <div className="border-border/60 max-h-72 overflow-auto rounded-md border">
+        <table className="w-full border-collapse text-[0.72rem]">
+          <tbody className="font-mono tabular-nums">
+            {entries.map(([k, v]) => (
+              <tr key={k} className="odd:bg-muted/20">
+                <td className="border-border/40 text-muted-foreground border-b px-2 py-1 whitespace-nowrap">
+                  {fmtCell(k)}
+                </td>
+                <td className="border-border/40 border-b px-2 py-1 text-right whitespace-nowrap">
+                  {fmtCell(v)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {s.truncated && (
+        <span className="text-muted-foreground text-[0.7rem]">
+          showing first {entries.length} of {s.length}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/** Render whatever the script put in `result`. */
+function ResultValue({ value }: { value: any }) {
+  if (value == null) return null;
+  if (value?._type === "dataframe") return <DataFrameTable df={value} />;
+  if (value?._type === "series") return <SeriesTable s={value} />;
+  // dict / list / scalar
+  const isScalar =
+    typeof value === "number" ||
+    typeof value === "string" ||
+    typeof value === "boolean";
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-muted-foreground text-[0.7rem] uppercase tracking-wide">
+        result
+      </span>
+      {isScalar ? (
+        <div className="rounded-md border bg-muted/40 px-2.5 py-1.5 font-mono text-sm">
+          {fmtCell(value)}
+        </div>
+      ) : (
+        <pre className="border-border/60 max-h-56 overflow-auto rounded-md border bg-muted/40 p-2.5 font-mono text-[0.72rem]">
+          {JSON.stringify(value, null, 2)}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+/** One-line outcome for the collapsed header. */
+function pythonSummary(env: any): ReactNode {
+  if (!env?.ok) {
+    const first = String(env?.error ?? "error").trim().split("\n").pop();
+    return (
+      <span>
+        <span className="text-muted-foreground">Python</span> —{" "}
+        <span className="text-rose-500">{first}</span>
+      </span>
+    );
+  }
+  const r = env.result;
+  let out: ReactNode = "done";
+  if (r?._type === "dataframe") out = <b>{r.shape?.[0]} × {r.shape?.[1]} table</b>;
+  else if (r?._type === "series") out = <b>series · {r.length}</b>;
+  else if (r == null) out = env.stdout ? "printed output" : "no value";
+  else if (typeof r === "object")
+    out = <b>{Array.isArray(r) ? `${r.length} items` : `${Object.keys(r).length} fields`}</b>;
+  else out = <b className="font-mono">{fmtCell(r)}</b>;
+  return (
+    <span>
+      <span className="text-muted-foreground">Python</span> → {out}
+    </span>
+  );
+}
 
 const VIEWS: Record<string, ToolView> = {
   grid_summary: {
@@ -625,6 +834,43 @@ const VIEWS: Record<string, ToolView> = {
       );
     },
   },
+
+  run_python: {
+    icon: Code2Icon,
+    accent: ACCENT.code,
+    title: "Running analysis",
+    ownErrors: true,
+    summary: (r) => pythonSummary(r),
+    Detail: ({ result: env, args }) => (
+      <div className="flex flex-col gap-3">
+        <CodeBlock code={args?.code} />
+        {env?.stdout ? (
+          <div className="flex flex-col gap-1">
+            <span className="text-muted-foreground flex items-center gap-1 text-[0.7rem] uppercase tracking-wide">
+              <TerminalIcon className="size-3" /> stdout
+            </span>
+            <pre className="border-border/60 max-h-40 overflow-auto rounded-md border bg-muted/40 p-2.5 font-mono text-[0.72rem] whitespace-pre-wrap">
+              {env.stdout}
+              {env.stdout_truncated ? "\n… (truncated)" : ""}
+            </pre>
+          </div>
+        ) : null}
+        {env?.ok ? (
+          <ResultValue value={env.result} />
+        ) : (
+          <div className="flex flex-col gap-1">
+            <span className="text-[0.7rem] uppercase tracking-wide text-rose-500">
+              error
+            </span>
+            <pre className="max-h-48 overflow-auto rounded-md border border-rose-500/30 bg-rose-500/5 p-2.5 font-mono text-[0.72rem] whitespace-pre-wrap text-rose-600 dark:text-rose-400">
+              {String(env?.error ?? "")}
+              {env?.stderr ? `\n${env.stderr}` : ""}
+            </pre>
+          </div>
+        )}
+      </div>
+    ),
+  },
 };
 
 // --- entry point -------------------------------------------------------------
@@ -643,14 +889,18 @@ function hasError(result: unknown): result is { error: string } {
  */
 const ToolCallViewImpl: ToolCallMessagePartComponent = ({
   toolName,
+  args,
   result,
   status,
 }) => {
   const view = VIEWS[toolName];
   if (!view) return null as unknown as JSX.Element;
 
-  const ready = result !== undefined && !hasError(result);
-  const errored = hasError(result);
+  // Views with `ownErrors` render their own failure state (the `error` field is
+  // legitimate data they want to show next to the input); everyone else lets the
+  // entry point surface it as a red one-liner.
+  const errored = !view.ownErrors && hasError(result);
+  const ready = result !== undefined && !errored;
 
   return (
     <ToolCard
@@ -663,19 +913,19 @@ const ToolCallViewImpl: ToolCallMessagePartComponent = ({
         errored ? (
           <span className="text-rose-500">{(result as any).error}</span>
         ) : ready ? (
-          safeSummary(view, result)
+          safeSummary(view, result, args)
         ) : null
       }
     >
-      {ready ? <view.Detail result={result} /> : null}
+      {ready ? <view.Detail result={result} args={args} /> : null}
     </ToolCard>
   );
 };
 
 /** A malformed result shouldn't crash the whole thread. */
-function safeSummary(view: ToolView, result: unknown): ReactNode {
+function safeSummary(view: ToolView, result: unknown, args: unknown): ReactNode {
   try {
-    return view.summary(result);
+    return view.summary(result, args);
   } catch {
     return <span className="text-muted-foreground">done</span>;
   }
@@ -687,4 +937,15 @@ ToolCallView.displayName = "ToolCallView";
 /** Whether a dedicated view exists for this tool name. */
 export function hasToolView(toolName: string): boolean {
   return toolName in VIEWS;
+}
+
+/**
+ * Icon + accent colour for a tool, used by the collapsed tool-group header so
+ * the tools that ran are recognisable at a glance. Unknown tools fall back to a
+ * neutral wrench (matching <ToolFallback>).
+ */
+export function toolIcon(toolName: string): { icon: LucideIcon; accent: string } {
+  const view = VIEWS[toolName];
+  if (view) return { icon: view.icon, accent: view.accent };
+  return { icon: WrenchIcon, accent: "text-muted-foreground" };
 }

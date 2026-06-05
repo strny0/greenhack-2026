@@ -17,6 +17,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
+import { toolIcon } from "@/agent/tool-views";
 
 const ANIMATION_DURATION = 200;
 
@@ -94,14 +95,52 @@ function ToolGroupRoot({
   );
 }
 
+/** Max tool icons to render inline before collapsing the rest into "+N". */
+const MAX_TOOL_ICONS = 8;
+
+/**
+ * Row of per-tool icons shown in the collapsed header so the tools that ran are
+ * recognisable at a glance (one icon per call, in order). Hidden while the
+ * group is open since the full cards are then visible below.
+ */
+function ToolGroupIcons({ toolNames }: { toolNames: readonly string[] }) {
+  if (toolNames.length === 0) return null;
+  const shown = toolNames.slice(0, MAX_TOOL_ICONS);
+  const overflow = toolNames.length - shown.length;
+
+  return (
+    <span
+      data-slot="tool-group-trigger-icons"
+      aria-hidden
+      className="flex shrink-0 items-center gap-1 group-data-[state=open]/trigger:hidden"
+    >
+      {shown.map((name, i) => {
+        const { icon: Icon, accent } = toolIcon(name);
+        return (
+          <Icon key={i} className={cn("size-3.5", accent)} aria-label={name}>
+            <title>{name}</title>
+          </Icon>
+        );
+      })}
+      {overflow > 0 && (
+        <span className="text-muted-foreground text-xs font-medium">
+          +{overflow}
+        </span>
+      )}
+    </span>
+  );
+}
+
 function ToolGroupTrigger({
   count,
   active = false,
+  toolNames = [],
   className,
   ...props
 }: React.ComponentProps<typeof CollapsibleTrigger> & {
   count: number;
   active?: boolean;
+  toolNames?: readonly string[];
 }) {
   const label = `${count} tool ${count === 1 ? "call" : "calls"}`;
 
@@ -141,6 +180,7 @@ function ToolGroupTrigger({
           </span>
         )}
       </span>
+      <ToolGroupIcons toolNames={toolNames} />
       <ChevronDownIcon
         data-slot="tool-group-trigger-chevron"
         className={cn(

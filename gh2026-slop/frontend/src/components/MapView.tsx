@@ -20,6 +20,8 @@ interface Props {
   highlight: Set<string>;
   selected: Selection | null;
   onSelect: (s: Selection | null) => void;
+  /** A "fly the camera here" request; the nonce re-triggers repeated jumps. */
+  zoomTo: { kind: "node" | "line"; id: string; nonce: number } | null;
 }
 
 const STYLE: maplibregl.StyleSpecification = {
@@ -96,7 +98,7 @@ const loadingColor: maplibregl.ExpressionSpecification = [
   ] as any,
 ];
 
-export default function MapView({ frame, meta, highlight, selected, onSelect }: Props) {
+export default function MapView({ frame, meta, highlight, selected, onSelect, zoomTo }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const ready = useRef(false);
@@ -281,6 +283,27 @@ export default function MapView({ frame, meta, highlight, selected, onSelect }: 
     map.setFilter("node-selected", ["==", ["get", "id"], selected?.kind === "node" ? selected.id : "__none__"]);
     map.setFilter("line-selected", ["==", ["get", "id"], selected?.kind === "line" ? selected.id : "__none__"]);
   }, [selected]);
+
+  // fly the camera to a requested element (chat chip double-click / reticle)
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready.current || !zoomTo) return;
+    if (zoomTo.kind === "node") {
+      const n = frame.nodes.find((x) => x.id === zoomTo.id);
+      if (!n) return;
+      map.flyTo({ center: [n.lon, n.lat], zoom: Math.max(map.getZoom(), 12), duration: 800 });
+    } else {
+      const l = frame.lines.find((x) => x.id === zoomTo.id);
+      if (!l) return;
+      const a = frame.nodes.find((x) => x.id === l.from_node);
+      const b = frame.nodes.find((x) => x.id === l.to_node);
+      if (!a || !b) return;
+      const bounds = new maplibregl.LngLatBounds([a.lon, a.lat], [a.lon, a.lat]).extend([b.lon, b.lat]);
+      map.fitBounds(bounds, { padding: 140, maxZoom: 13, duration: 800 });
+    }
+    // frame intentionally omitted: re-fly only when a new zoom request arrives.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [zoomTo]);
 
   return <div id="map" ref={ref} />;
 }

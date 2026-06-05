@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import type { ContingencyResult, Meta, StateFrame, WeatherPoint, WhatIfResponse } from "../types";
 import type { Selection } from "./MapView";
@@ -25,6 +25,7 @@ interface Props {
   onFocus: (ids: string[]) => void;
   onClearFocus: () => void;
   onSelect: (s: Selection | null) => void;
+  onZoom: (kind: "node" | "line", id: string) => void;
 }
 
 type Tab = "alerts" | "n1" | "whatif" | "weather" | "chat";
@@ -83,8 +84,46 @@ const SectionTitle = ({ children }: { children: React.ReactNode }) => (
   <div className="mb-2 mt-1 text-[11px] uppercase tracking-wide text-muted-foreground">{children}</div>
 );
 
-export default function Sidebar({ frame, meta, selected, onFocus, onClearFocus, onSelect }: Props) {
+const MIN_WIDTH = 320;
+const MAX_WIDTH = 720;
+const DEFAULT_WIDTH = 390;
+const WIDTH_KEY = "sidebar-width";
+
+export default function Sidebar({ frame, meta, selected, onFocus, onClearFocus, onSelect, onZoom }: Props) {
   const [tab, setTab] = useState<Tab>("alerts");
+
+  // Operator-resizable panel. Width persists across reloads; the map area is
+  // flex-1 and reflows around whatever width we land on.
+  const [width, setWidth] = useState(() => {
+    const saved = Number(localStorage.getItem(WIDTH_KEY));
+    return saved >= MIN_WIDTH && saved <= MAX_WIDTH ? saved : DEFAULT_WIDTH;
+  });
+  const dragging = useRef(false);
+
+  const onResizeStart = useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    dragging.current = true;
+  }, []);
+
+  useEffect(() => {
+    const onMove = (e: PointerEvent) => {
+      if (!dragging.current) return;
+      // Handle sits on the panel's left edge, so width grows as the cursor moves left.
+      const next = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, window.innerWidth - e.clientX));
+      setWidth(next);
+    };
+    const onUp = () => {
+      if (!dragging.current) return;
+      dragging.current = false;
+      localStorage.setItem(WIDTH_KEY, String(width));
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, [width]);
 
   // client-side alerts (stay in sync with scrubber, no extra fetch)
   const alerts = useMemo(() => {
@@ -115,12 +154,17 @@ export default function Sidebar({ frame, meta, selected, onFocus, onClearFocus, 
         onFocus([id]);
         onSelect({ kind, id });
       },
+      jump: (kind, id) => {
+        onFocus([id]);
+        onSelect({ kind, id });
+        onZoom(kind, id);
+      },
       has: (kind, id) =>
         kind === "node"
           ? frame.nodes.some((n) => n.id === id)
           : frame.lines.some((l) => l.id === id),
     }),
-    [frame, onFocus, onSelect],
+    [frame, onFocus, onSelect, onZoom],
   );
 
   const TABS: [Tab, string, number][] = [
@@ -135,7 +179,13 @@ export default function Sidebar({ frame, meta, selected, onFocus, onClearFocus, 
     // The runtime provider is mounted once, above the tab body, so the agent
     // conversation persists when the operator switches tabs.
     <AgentRuntimeProvider timestamp={frame.timestamp} selection={selected}>
-      <aside className="flex w-[390px] flex-col border-l bg-card">
+      <aside className="relative flex shrink-0 flex-col border-l bg-card" style={{ width }}>
+        {/* Drag handle on the left edge to resize the panel. */}
+        <div
+          onPointerDown={onResizeStart}
+          className="absolute -left-1 top-0 z-10 h-full w-2 cursor-col-resize select-none transition-colors hover:bg-primary/30"
+          title="Drag to resize"
+        />
         <Tabs
           value={tab}
           onValueChange={(v) => {

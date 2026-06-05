@@ -36,7 +36,9 @@ from pydantic_ai.messages import (
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import UsageLimits
 
-from . import config, engine, weather
+import anyio
+
+from . import config, engine, sandbox, weather
 from .data_loader import store
 from .model import WhatIfRequest
 
@@ -414,6 +416,41 @@ async def weather_overlay() -> dict:
         return {"summary": data.get("summary"), "points": data.get("points", [])[:8]}
     except Exception as e:  # noqa: BLE001
         return {"error": f"weather unavailable: {e}"}
+
+
+@agent.tool
+async def run_python(ctx: RunContext[Deps], code: str) -> dict:
+    """Run a short read-only Python/pandas script over the grid data when the
+    structured tools above don't fit the question — e.g. custom aggregations,
+    correlations, group-bys, or scanning the realtime time series.
+
+    The script runs in a locked-down sandbox (separate process, CPU/memory caps,
+    no network, ~15s budget). These names are already defined — do NOT read files
+    or import anything to get the data; just use them:
+
+      pandas as `pd`, numpy as `np`
+      Static tables (DataFrames):
+        buses[bus_name, region, v_rated_kv, is_slack, min_v_pu, max_v_pu, ...]
+        branches[branch_name, from_bus, to_bus, r_ohm, x_ohm, max_i_ka, ...]
+        gens[gen_name, bus_name, opt_category, max_p_mw, min_p_mw]
+        loads[load_name, bus_name]
+      The CURRENT viewed hour (solved load flow), as DataFrames:
+        nodes[id, type, zone, v_nominal_kv, vm_pu, production_mw, consumption_mw,
+              net_mw, state, ...]
+        lines[id, from_node, to_node, kind, max_i_ka, loading_pct, p_from_mw,
+              p_to_mw, i_ka, in_service, state]
+        summary (dict), timestamp (str)
+      Lazy realtime helpers (large files — always pass a name to filter):
+        gen_dispatch(gen_name=None, start=None, end=None) -> DataFrame [datetime, p_mw, ...]
+        load_demand(load_name=None, start=None, end=None) -> DataFrame
+        fuel_prices() -> DataFrame (daily 2024, by region)
+
+    Return values: assign your answer to a variable named `result` (a number,
+    dict, or small DataFrame) and/or `print()` it. Large DataFrames come back as
+    shape + a 50-row preview. Keep it small and deterministic."""
+    return await anyio.to_thread.run_sync(
+        sandbox.run_user_code, code, ctx.deps.timestamp
+    )
 
 
 # --- streaming runner --------------------------------------------------------

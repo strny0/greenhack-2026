@@ -1,4 +1,5 @@
 import { createContext, useContext, type ReactNode } from "react";
+import { LocateFixedIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /**
@@ -17,6 +18,8 @@ export type GridKind = "node" | "line";
 export interface GridRefCtx {
   /** Focus + select the element on the map. */
   pick: (kind: GridKind, id: string) => void;
+  /** Focus + select *and* fly the camera to the element (double-click / reticle). */
+  jump: (kind: GridKind, id: string) => void;
   /** Whether the element exists in the current frame (else rendered as text). */
   has: (kind: GridKind, id: string) => boolean;
 }
@@ -106,23 +109,39 @@ function GridChip({ kind, id, children }: { kind: GridKind; id: string; children
   // Exact-match: only a real element in the current frame becomes a chip.
   if (!ctx || !ctx.has(kind, id)) return <>{children ?? id}</>;
   return (
-    <button
-      type="button"
-      onClick={() => ctx.pick(kind, id)}
-      title={`Show ${id} on the map`}
+    <span
+      // Double-click anywhere on the chip flies the camera to the element; a
+      // single click just focuses/selects it (cheaper, no camera move).
+      onDoubleClick={() => ctx.jump(kind, id)}
       className={cn(
-        "mx-px inline-flex cursor-pointer items-center gap-1 rounded border px-1.5 py-px align-baseline font-mono text-[0.82em] transition-colors",
+        "mx-px inline-flex items-center gap-1 rounded border pr-0.5 pl-1.5 align-baseline font-mono text-[0.82em] transition-colors",
         "border-border bg-muted/60 text-foreground hover:border-ring hover:bg-accent",
       )}
     >
-      <span
-        className={cn(
-          "inline-block size-1.5 shrink-0 rounded-full",
-          kind === "node" ? "bg-sky-400" : "bg-emerald-400",
-        )}
-      />
-      {children ?? id}
-    </button>
+      <button
+        type="button"
+        onClick={() => ctx.pick(kind, id)}
+        title={`Show ${id} on the map (double-click to zoom)`}
+        className="inline-flex cursor-pointer items-center gap-1 py-px"
+      >
+        <span
+          className={cn(
+            "inline-block size-1.5 shrink-0 rounded-full",
+            kind === "node" ? "bg-sky-400" : "bg-emerald-400",
+          )}
+        />
+        {children ?? id}
+      </button>
+      <button
+        type="button"
+        onClick={() => ctx.jump(kind, id)}
+        title={`Zoom to ${id} on the map`}
+        aria-label={`Zoom to ${id} on the map`}
+        className="text-muted-foreground hover:text-foreground inline-flex cursor-pointer items-center rounded p-0.5 transition-colors"
+      >
+        <LocateFixedIcon className="size-3" />
+      </button>
+    </span>
   );
 }
 

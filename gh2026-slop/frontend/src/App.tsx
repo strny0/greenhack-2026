@@ -15,6 +15,9 @@ export default function App() {
   const [playing, setPlaying] = useState(false);
   const [selected, setSelected] = useState<Selection | null>(null);
   const [highlight, setHighlight] = useState<Set<string>>(new Set());
+  // A "fly the camera here" request. The nonce makes repeated jumps to the same
+  // element re-trigger the view's effect (a new object identity each time).
+  const [zoomTo, setZoomTo] = useState<{ kind: "node" | "line"; id: string; nonce: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<"map" | "sld">("sld");
   const timer = useRef<number | null>(null);
@@ -53,6 +56,8 @@ export default function App() {
 
   const focus = (ids: string[]) => setHighlight(new Set(ids));
   const clearFocus = () => setHighlight(new Set());
+  const zoom = (kind: "node" | "line", id: string) =>
+    setZoomTo({ kind, id, nonce: Date.now() });
 
   const selectedNode = useMemo(
     () => (selected?.kind === "node" ? frame?.nodes.find((n) => n.id === selected.id) ?? null : null),
@@ -101,6 +106,7 @@ export default function App() {
               highlight={highlight}
               selected={selected}
               onSelect={setSelected}
+              zoomTo={zoomTo}
             />
           ) : (
             <SldView
@@ -109,6 +115,7 @@ export default function App() {
               highlight={highlight}
               selected={selected}
               onSelect={setSelected}
+              zoomTo={zoomTo}
             />
           )}
           <Legend />
@@ -129,6 +136,7 @@ export default function App() {
           onFocus={focus}
           onClearFocus={clearFocus}
           onSelect={setSelected}
+          onZoom={zoom}
         />
       </div>
     </div>

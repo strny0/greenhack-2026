@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, MouseEvent, WheelEvent } from "react";
+import { useEffect, useMemo, useRef, useState, MouseEvent, WheelEvent } from "react";
 import type { Meta, StateFrame, GridLine, GridNode } from "../types";
 import {
   CASING_COLOR,
@@ -22,6 +22,8 @@ interface Props {
   highlight: Set<string>;
   selected: Selection | null;
   onSelect: (s: Selection | null) => void;
+  /** A "frame the camera here" request; the nonce re-triggers repeated jumps. */
+  zoomTo: { kind: "node" | "line"; id: string; nonce: number } | null;
 }
 
 // SVG y grows down. The dataset y range is negative; smaller (more-negative)
@@ -155,7 +157,7 @@ function routePath(
 
 type Tooltip = { x: number; y: number; html: string } | null;
 
-export default function SldView({ frame, meta, highlight, selected, onSelect }: Props) {
+export default function SldView({ frame, meta, highlight, selected, onSelect, zoomTo }: Props) {
   const bbox = meta.sld_bbox;
   const coords = meta.sld_coords;
 
@@ -229,16 +231,82 @@ export default function SldView({ frame, meta, highlight, selected, onSelect }: 
     return { x: bbox.x_min - pad, y: sy_min - pad, w: w + 2 * pad, h: h + 2 * pad };
   }, [bbox]);
 
-  const [view, setView] = useState(initial);
+  type Box = { x: number; y: number; w: number; h: number };
+  const [view, setView] = useState<Box>(initial);
   const [tip, setTip] = useState<Tooltip>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ x: number; y: number; vx: number; vy: number } | null>(null);
+
+  // viewBox tween. `viewRef` mirrors the committed view so an animation always
+  // starts from where we actually are; `animRef` holds the in-flight rAF id so
+  // a new jump or any direct interaction (wheel/drag) can interrupt it.
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const animRef = useRef<number | null>(null);
+  const cancelAnim = () => {
+    if (animRef.current != null) {
+      cancelAnimationFrame(animRef.current);
+      animRef.current = null;
+    }
+  };
+  // Smoothly fly the viewBox to `target`: pan the centre linearly while scaling
+  // the size geometrically (so a zoom feels even, not lurching), eased out.
+  const animateTo = (target: Box, duration = 600) => {
+    cancelAnim();
+    const start = viewRef.current;
+    const t0 = performance.now();
+    const ease = (t: number) => 1 - Math.pow(1 - t, 3); // easeOutCubic
+    const step = (now: number) => {
+      const k = ease(Math.min(1, (now - t0) / duration));
+      const scx = start.x + start.w / 2, scy = start.y + start.h / 2;
+      const tcx = target.x + target.w / 2, tcy = target.y + target.h / 2;
+      const w = start.w * Math.pow(target.w / start.w, k);
+      const h = start.h * Math.pow(target.h / start.h, k);
+      const cx = scx + (tcx - scx) * k;
+      const cy = scy + (tcy - scy) * k;
+      setView({ x: cx - w / 2, y: cy - h / 2, w, h });
+      animRef.current = k < 1 ? requestAnimationFrame(step) : null;
+    };
+    animRef.current = requestAnimationFrame(step);
+  };
+  // stop any tween when the component unmounts
+  useEffect(() => cancelAnim, []);
 
   const lastBbox = useRef(bbox);
   if (lastBbox.current !== bbox) {
     lastBbox.current = bbox;
     setView(initial);
   }
+
+  // frame the requested element (chat chip double-click / reticle) by flying the
+  // viewBox to a tight box centred on it. Aspect ratio is taken from `initial`
+  // so the on-screen zoom is consistent regardless of the current pan/zoom.
+  useEffect(() => {
+    if (!zoomTo) return;
+    const aspect = initial.w / initial.h;
+    let cx: number, cy: number, tw: number;
+    if (zoomTo.kind === "node") {
+      const c = coords[zoomTo.id];
+      if (!c) return;
+      cx = c[0];
+      cy = screenY(c[1]);
+      tw = initial.w / 6;
+    } else {
+      const g = branchGeom.find((x) => x?.l.id === zoomTo.id);
+      if (!g) return;
+      const minX = Math.min(g.ax, g.bx), maxX = Math.max(g.ax, g.bx);
+      const minY = Math.min(g.ay, g.by, g.midY), maxY = Math.max(g.ay, g.by, g.midY);
+      cx = (minX + maxX) / 2;
+      cy = (minY + maxY) / 2;
+      tw = Math.max(maxX - minX, (maxY - minY) * aspect, initial.w / 8) * 1.6;
+    }
+    const minSize = Math.max(initial.w, initial.h) * 0.05;
+    const maxSize = Math.max(initial.w, initial.h) * 4;
+    tw = Math.max(minSize, Math.min(maxSize, tw));
+    const th = tw / aspect;
+    animateTo({ x: cx - tw / 2, y: cy - th / 2, w: tw, h: th });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [zoomTo]);
 
   const setTipFor = (e: MouseEvent, html: string) => {
     const rect = wrapRef.current?.getBoundingClientRect();
@@ -248,6 +316,7 @@ export default function SldView({ frame, meta, highlight, selected, onSelect }: 
 
   const onWheel = (e: WheelEvent<SVGSVGElement>) => {
     e.preventDefault();
+    cancelAnim();
     const svg = e.currentTarget;
     const rect = svg.getBoundingClientRect();
     const mx = e.clientX - rect.left;
@@ -268,6 +337,7 @@ export default function SldView({ frame, meta, highlight, selected, onSelect }: 
     if (e.button !== 0) return;
     const tag = (e.target as Element).tagName;
     if (tag !== "rect" && tag !== "svg") return;
+    cancelAnim();
     dragRef.current = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y };
     (e.currentTarget as SVGSVGElement).classList.add("dragging");
   };
@@ -287,7 +357,7 @@ export default function SldView({ frame, meta, highlight, selected, onSelect }: 
   const onDoubleClick = (e: MouseEvent<SVGSVGElement>) => {
     const tag = (e.target as Element).tagName;
     if (tag !== "rect" && tag !== "svg") return;
-    setView(initial);
+    animateTo(initial);
   };
 
   const lineTip = (l: GridLine) =>

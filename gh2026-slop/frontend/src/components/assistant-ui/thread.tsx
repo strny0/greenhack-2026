@@ -224,6 +224,34 @@ const MessageError: FC = () => {
   );
 };
 
+/**
+ * Header for a coalesced tool-call group. Resolves the tool name behind each
+ * grouped part index (from the live message parts) so the collapsed trigger can
+ * show one icon per call — a glanceable preview of what ran before expanding.
+ */
+const ToolGroupHeader: FC<{ indices: readonly number[]; active: boolean }> = ({
+  indices,
+  active,
+}) => {
+  const toolNames = useAuiState((s) =>
+    indices
+      .map((i) => {
+        const part = s.message.parts[i];
+        return part?.type === "tool-call" ? part.toolName : null;
+      })
+      .filter((n): n is string => n != null)
+      .join(" "),
+  );
+
+  return (
+    <ToolGroupTrigger
+      count={indices.length}
+      active={active}
+      toolNames={toolNames ? toolNames.split(" ") : []}
+    />
+  );
+};
+
 const AssistantMessage: FC = () => {
   // reserves space for action bar and compensates with `-mb` for consistent msg spacing
   // keeps hovered action bar from shifting layout (autohide doesn't support absolute positioning well)
@@ -267,8 +295,8 @@ const AssistantMessage: FC = () => {
               case "group-tool":
                 return (
                   <ToolGroupRoot>
-                    <ToolGroupTrigger
-                      count={part.indices.length}
+                    <ToolGroupHeader
+                      indices={part.indices}
                       active={part.status.type === "running"}
                     />
                     <ToolGroupContent>{children}</ToolGroupContent>
