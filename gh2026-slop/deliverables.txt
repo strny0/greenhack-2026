@@ -1,0 +1,144 @@
+==============================================================================
+ GRID PULSE — TESTABLE DELIVERABLES
+ ČEPS / GreenHack 2026 · real-time situational awareness for transmission grids
+==============================================================================
+
+Legend:  [DONE] testable now   [WIP] in progress   [TODO] not started yet
+Engine:  pandapower (load flow + N-1) · data: ČEPS 118-bus, 8760 hourly snapshots
+
+------------------------------------------------------------------------------
+ HOW TO RUN
+------------------------------------------------------------------------------
+Backend:
+  cd backend
+  ./run.sh                       # http://127.0.0.1:8099  (first boot warms a frame window)
+  # or: source .venv/bin/activate && uvicorn app.main:app --port 8099
+
+Frontend (once built):
+  cd frontend
+  npm install
+  npm run dev                    # http://127.0.0.1:5173
+
+Chatbot key (optional): copy backend/.env.example -> backend/.env, set AI_API_KEY
+(OpenAI-compatible, default OpenRouter).
+
+==============================================================================
+ A. BACKEND DELIVERABLES  (test with curl — all [DONE])
+==============================================================================
+
+A1. [DONE] Grid loads + load flow runs on real ČEPS data
+    What: 8760 pandapower snapshots; AC load flow (pp.runpp) on demand, cached.
+    Test:
+      curl -s localhost:8099/api/health
+    Expect: {"ok":true,"snapshots":8760}
+
+A2. [DONE] Canonical grid state for any timestamp (nodes + lines + summary)
+    What: 118 buses (typed: generation/load/substation/slack, geo-projected onto
+          Czechia), 186 branches (lines+trafos) with loading %, voltages, flows.
+    Test:
+      curl -s "localhost:8099/api/frame?timestamp=2024-01-04T18:00:00" \
+        | python3 -m json.tool | head -40
+    Expect: summary{converged:true, total_generation_mw, total_load_mw,
+            max_loading_pct...}, nodes[], lines[] each with lat/lon + state.
+
+A3. [DONE] Threshold alerts (line loading + voltage vs each bus's rated band)
+    Test:
+      curl -s "localhost:8099/api/alerts?timestamp=2024-01-04T18:00:00"
+    Expect: list of {severity, category, element_id, message, value}.
+
+A4. [DONE] Time-series for one element across a window (detail-panel charts)
+    Test:
+      curl -s "localhost:8099/api/timeseries?element_id=branch_001_002_1&kind=line&metric=loading&start=2024-01-04T00:00:00&count=12"
+    Expect: {t:[...12 timestamps], v:[...12 loading %]}.
+
+A5. [DONE] N-1 security analysis (trip each line, re-solve, rank)
+    What: distinguishes solvable contingencies (ranked by worst resulting
+          loading + overloaded elements) from islanding/voltage-collapse cases.
+    Test:
+      curl -s "localhost:8099/api/n1?timestamp=2024-01-04T18:00:00&limit=20"
+    Expect: results[] sorted worst-first; some converged=false = critical
+            (radial feeder trip islands a bus).
+
+A6. [DONE] What-if scenarios (disconnect lines / trip buses / scale load)
+    What: applies operator actions, re-runs load flow, diffs vs base case.
+    Test:
+      curl -s -X POST localhost:8099/api/whatif -H 'content-type: application/json' \
+        -d '{"timestamp":"2024-01-04T18:00:00","disconnect_lines":["branch_001_002_1"],"load_scale":1.2}'
+    Expect: base.summary.max_loading_pct ~57 -> scenario ~85, diffs[] per line
+            (before/after/delta), new_alerts[].
+
+A7. [DONE] Weather overlay + non-ML solar-drop heuristic (Open-Meteo, no key)
+    What: real Czech cloud cover/wind at the biggest solar buses; flags rising
+          cloud cover -> expected PV drop. Clearly labelled heuristic.
+    Test:
+      curl -s "localhost:8099/api/weather"
+    Expect: points[] with cloud_cover_now/3h, wind, solar_risk; summary string.
+
+A8. [DONE] Dispatcher chatbot proxy (OpenAI-compatible / OpenRouter)
+    What: grounds the model in current grid state + alerts. Works without a key
+          (returns the grounded context so you can see what the model sees).
+    Test (no key needed to see grounding):
+      curl -s -X POST localhost:8099/api/chat -H 'content-type: application/json' \
+        -d '{"timestamp":"2024-01-04T18:00:00","messages":[{"role":"user","content":"What is the state of the grid?"}]}'
+    Expect: {reply, model, grounded}. With AI_API_KEY set -> real answer.
+
+A9. [DONE] Meta / config endpoint (timestamps, bbox, thresholds, suggestions)
+    Test:
+      curl -s localhost:8099/api/meta | python3 -m json.tool | head -30
+
+==============================================================================
+ B. FRONTEND DELIVERABLES  (test in browser at http://127.0.0.1:5173 — all [DONE])
+==============================================================================
+Run: cd frontend && npm install && npm run dev   (backend must be running)
+
+B1. [DONE] Map-based grid view (core)
+    MapLibre map of Czechia, 118 nodes + 186 branches. Lines coloured
+    green->amber->red by loading (with dark casing for contrast); nodes coloured
+    by type (generation/load/substation/slack) and sized by power. Legend shown.
+
+B2. [DONE] Load-flow rendering
+    Map reflects the solved state for the selected timestamp; scrubbing updates
+    colours and KPI bar (generation, load, balancing, max loading, converged).
+
+B3. [DONE] Node/line detail panel
+    Click a node/line -> overlay card with static ratings + live values + a
+    windowed time-series chart (Recharts) with the 90% alert reference line.
+
+B4. [DONE] Threshold alerts tab
+    Live alert/warning list with a count badge; click an item -> map focuses +
+    selects that element. Stays in sync with the scrubber.
+
+B5. [DONE] Time scrubber / playback ("pulse")
+    Slider + play/pause steps through the 48h window; map + KPIs animate; a
+    pulsing brand dot reinforces the live-system metaphor.
+
+B6. [DONE] What-if controls
+    Pick a line to disconnect + a load multiplier -> "Run scenario" -> shows base
+    vs scenario max loading, biggest movers, new alerts; movers highlighted on map.
+
+B7. [DONE] N-1 overload outlook tab
+    "Run N-1" -> ranked contingencies (survivable vs islanding/collapse); click one
+    -> tripped line + resulting overloads highlighted on the map.
+
+B8. [DONE] Weather overlay tab
+    "Fetch" -> per-solar-hub cloud cover/wind + solar-drop risk + heuristic summary.
+
+B9. [DONE] Dispatcher chatbot tab
+    Suggested questions + free text -> grounded answer (OpenAI-compatible). With no
+    key, shows the grounded grid context.
+
+==============================================================================
+ C. PACKAGING  (all [DONE])
+==============================================================================
+C1. [DONE] README.md with run steps + engine-deviation note (pandapower vs pypowsybl).
+C2. [DONE] Scripted 5-step demo walkthrough (in README.md "Scripted demo").
+C3. [DONE] Screenshot at docs/screenshot.png.
+
+------------------------------------------------------------------------------
+ NOTE ON DATA REALISM
+------------------------------------------------------------------------------
+- Coordinates in the dataset are schematic; we project them onto a Czech bbox
+  for the map (display only, not true substation locations).
+- The base grid is lightly loaded (~40-57%); congestion drama is produced by
+  the REAL physics of N-1 (A5) and what-if (A6), not faked.
+==============================================================================

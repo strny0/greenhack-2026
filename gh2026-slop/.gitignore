@@ -1,0 +1,17 @@
+# data (large ČEPS dataset, not committed)
+/data/
+
+# python
+backend/.venv/
+__pycache__/
+*.pyc
+.env
+backend/.env
+
+# node
+frontend/node_modules/
+frontend/dist/
+*.log
+
+# misc
+.DS_Store
