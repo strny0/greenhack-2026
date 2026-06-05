@@ -67,7 +67,19 @@ dataset, say so plainly rather than guessing.
 the question is about contingencies or operator actions, and keep limits modest.
 - Round sensibly, flag uncertainty, and state clearly when the data does not \
 support an answer.
-- You are read-only: you advise, you do not switch equipment."""
+- You are read-only: you advise, you do not switch equipment.
+
+Plan deviation / periodic safety check: use forecast_deviation_triage. It compares \
+the day-ahead plan to what actually happened and bundles the grid-security context. \
+Produce a TRIAGE VERDICT, not a narrative:
+  • risk_tier (none/low/medium/high) and notify (page the operator?).
+  • Suppress (notify=false) only when risk is low AND the deviation is explainable \
+(e.g. a weather-driven solar dip) AND the grid is secure — then a brief "on plan / \
+no action" is enough.
+  • Medium-to-high risk → notify, leading with WHERE the deviation is (generator/bus \
+or region), its grid impact, and the recommended action.
+  • safety_net.force_notify=true is non-negotiable: you MUST notify even if you would \
+otherwise suppress. Judge load by the bias-corrected anomaly, not the raw gap."""
 
 SUGGESTED_QUESTIONS = [
     "What is the overall state of the grid right now?",
@@ -355,6 +367,44 @@ def what_if(
             {"element_id": a.element_id, "message": a.message} for a in r.new_alerts
         ],
     }
+
+
+@agent.tool
+async def forecast_deviation_triage(ctx: RunContext[Deps], top_n: int = 8) -> dict:
+    """TRIAGE the grid against the day-ahead plan for the viewed hour. Use this for
+    "are we on plan / do I need to intervene?" and for the periodic safety check.
+
+    Returns, in one call: per-generator solar/wind plan-vs-actual deviation (Δ in
+    MW, ranked worst first; `bus` locates each), per-region load anomaly
+    (bias-corrected — read `anomaly_mw`, not raw `delta_mw`; see data_quality),
+    system totals, the grid-security state off the SAME snapshot (alerts, max line
+    loading, balancing power), an N-1 check when the deviation is significant, and
+    — when generation is materially under plan — a live weather cause-check.
+
+    Your job is to OUTPUT A TRIAGE VERDICT, not an explanation:
+      • risk_tier: none | low | medium | high
+      • notify: whether the operator should be paged
+    Suppress (notify=false) ONLY when risk is low AND the deviation is explainable
+    (e.g. weather-driven solar dip) AND the grid is secure. NON-NEGOTIABLE: if
+    `safety_net.force_notify` is true, you MUST notify regardless of your own read.
+    Lead with where the deviation is and the recommended action, kept terse."""
+    top_n = max(1, min(top_n, 30))
+    d = engine.assess_deviation(ctx.deps.timestamp)
+    # cause-check only when generation is materially under plan (weather is the
+    # usual culprit for a solar/wind shortfall) — keeps benign ticks cheap.
+    shortfall = d["generation_shortfall"]
+    if d["significant"] and (
+        shortfall["solar_mw"] >= config.DEV_SOLAR_MW or shortfall["wind_mw"] >= config.DEV_WIND_MW
+    ):
+        try:
+            wx = await weather.weather_overlay(None)
+            d["cause_hints"] = {"weather": {"summary": wx.get("summary"), "points": wx.get("points", [])[:6]}}
+        except Exception as e:  # noqa: BLE001
+            d["cause_hints"] = {"weather": {"error": f"unavailable: {e}"}}
+    else:
+        d["cause_hints"] = {"weather": {"ran": False, "reason": "no material generation shortfall"}}
+    d["worst_deviations"] = d["worst_deviations"][:top_n]
+    return d
 
 
 @agent.tool_plain

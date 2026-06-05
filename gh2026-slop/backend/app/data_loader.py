@@ -44,6 +44,8 @@ class DataStore:
         self.bus_lonlat: dict[str, tuple[float, float]] = {}
         self.bus_sld: dict[str, tuple[float, float]] = {}
         self.bus_renewable: dict[str, dict] = {}  # bus_name -> {solar_mw, wind_mw}
+        self.gen_to_bus: dict[str, str] = {}  # gen_name -> bus_name (deviation join)
+        self.bus_to_region: dict[str, str] = {}  # bus_name -> region (load join)
         self._discover()
         self._init_projector()
         self._init_static()
@@ -80,22 +82,32 @@ class DataStore:
             self.bus_sld[name] = (round(x, 2), round(y, 2))
 
     def _init_static(self) -> None:
-        """Aggregate solar/wind capacity per bus from static/gens.csv."""
+        """Aggregate solar/wind capacity per bus and build the gen->bus / bus->region
+        join tables used by forecast-vs-actual attribution (from static CSVs)."""
         gens_csv = config.STATIC_DIR / "gens.csv"
-        if not gens_csv.exists():
-            return
-        df = pd.read_csv(gens_csv)
-        for _, r in df.iterrows():
-            name = str(r.get("gen_name", ""))
-            bus = str(r.get("bus_name", ""))
-            cap = float(r.get("max_p_mw", 0.0) or 0.0)
-            if not bus:
-                continue
-            entry = self.bus_renewable.setdefault(bus, {"solar_mw": 0.0, "wind_mw": 0.0})
-            if name.startswith("solar"):
-                entry["solar_mw"] += cap
-            elif name.startswith("wind"):
-                entry["wind_mw"] += cap
+        if gens_csv.exists():
+            df = pd.read_csv(gens_csv)
+            for _, r in df.iterrows():
+                name = str(r.get("gen_name", ""))
+                bus = str(r.get("bus_name", ""))
+                cap = float(r.get("max_p_mw", 0.0) or 0.0)
+                if not bus:
+                    continue
+                self.gen_to_bus[name] = bus
+                entry = self.bus_renewable.setdefault(bus, {"solar_mw": 0.0, "wind_mw": 0.0})
+                if name.startswith("solar"):
+                    entry["solar_mw"] += cap
+                elif name.startswith("wind"):
+                    entry["wind_mw"] += cap
+
+        buses_csv = config.STATIC_DIR / "buses.csv"
+        if buses_csv.exists():
+            bdf = pd.read_csv(buses_csv)
+            for _, r in bdf.iterrows():
+                bus = str(r.get("bus_name", ""))
+                region = str(r.get("region", ""))
+                if bus and region:
+                    self.bus_to_region[bus] = region
 
     # --- accessors -----------------------------------------------------------
     @property

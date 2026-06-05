@@ -24,6 +24,10 @@ SNAPSHOTS_DIR = DATA_DIR / "snapshots"
 STATIC_DIR = DATA_DIR / "static"
 FORECASTS_DIR = DATA_DIR / "forecasts"
 REALTIME_DIR = DATA_DIR / "realtime"
+# Day-ahead forecast series ("the plan") compared against the solved snapshot.
+FORECASTS_DA_SOLAR = FORECASTS_DIR / "DA" / "Solar"  # Solar1..75DA.csv -> solar_001..
+FORECASTS_DA_WIND = FORECASTS_DIR / "DA" / "Wind"    # Wind1..17DA.csv  -> wind_001..
+FORECASTS_DA_LOAD = FORECASTS_DIR / "DA" / "Load"    # LoadR1..3DA.csv  -> region r1..r3
 
 # --- Frame cache / playback window ------------------------------------------
 # How many hourly frames to precompute at startup (the default "pulse" window).
@@ -47,6 +51,19 @@ VOLTAGE_WARN_MARGIN = float(os.getenv("GRID_VOLTAGE_WARN_MARGIN", "0.01"))
 # A contingency is "critical" if it pushes any monitored element above this %.
 N1_OVERLOAD_PCT = float(os.getenv("GRID_N1_OVERLOAD_PCT", "100"))
 N1_MAX_CONTINGENCIES = int(os.getenv("GRID_N1_MAX_CONTINGENCIES", "200"))
+
+# --- Forecast-vs-actual deviation triage ------------------------------------
+# A deviation is "significant" (worth pulling weather / running N-1) when the
+# system-level generation gap or any region's load gap crosses these. Tunable.
+DEV_SOLAR_MW = float(os.getenv("GRID_DEV_SOLAR_MW", "300"))  # |plan-actual| solar
+DEV_WIND_MW = float(os.getenv("GRID_DEV_WIND_MW", "40"))     # |plan-actual| wind
+# (Load is advisory only — the DA load forecast is structurally divergent from the
+# snapshots here, so it does not gate significance; see engine.assess_deviation.)
+# Conditional N-1 only runs when significant/stressed; keep this cap small.
+N1_DEV_LIMIT = int(os.getenv("GRID_N1_DEV_LIMIT", "20"))
+# Deterministic safety net: balancing power beyond this fraction of total load
+# means the slack is doing too much work to mask the deviation -> force notify.
+DEV_SLACK_LOAD_FRACTION = float(os.getenv("GRID_DEV_SLACK_LOAD_FRACTION", "0.25"))
 
 # --- Geographic projection (schematic x/y -> WGS84 over Czechia) ------------
 # The dataset ships schematic coordinates, not geography. We linearly project
