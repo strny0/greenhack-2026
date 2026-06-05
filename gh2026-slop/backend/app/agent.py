@@ -38,6 +38,7 @@ from pydantic_ai.usage import UsageLimits
 
 from . import config, engine, weather
 from .data_loader import store
+from .gridstats import tools as _gst
 from .model import WhatIfRequest
 
 # `OpenAIChatModel` is the chat-completions class (works with third-party
@@ -69,6 +70,17 @@ dataset, say so plainly rather than guessing.
 the question is about contingencies or operator actions, and keep limits modest.
 - Round sensibly, flag uncertainty, and state clearly when the data does not \
 support an answer.
+- For "is this unusual", "how does this compare to normal", "which days stood out", \
+or "did the forecast hold" questions, use the statistical tools (explain_hour, \
+loading_context, plan_adherence, interesting_days, deep_dive). They read from a \
+precomputed seasonal bundle — no pandapower call, fast. Prefer explain_hour \
+(lightweight) over deep_dive unless a full breakdown is explicitly requested.
+- When presenting statistical tool results, speak operationally — never quote \
+z-scores, σ values, or percentile ranks to the operator. Translate: a large z or \
+surprise_z → "significantly above/below forecast"; pct_rank 90/95/99 → "above its \
+normal range for this time of day"; off_plan: true → "the day ran off-plan". Use MW \
+deltas and % where they add clarity, but drop the statistical notation entirely unless \
+it is explicitly asked for.
 - You are read-only: you advise, you do not switch equipment."""
 
 SUGGESTED_QUESTIONS = [
@@ -414,6 +426,85 @@ async def weather_overlay() -> dict:
         return {"summary": data.get("summary"), "points": data.get("points", [])[:8]}
     except Exception as e:  # noqa: BLE001
         return {"error": f"weather unavailable: {e}"}
+
+
+# --- statistical / historical tools (read from precomputed GridStatsBundle) --
+
+
+@agent.tool
+def explain_hour(ctx: RunContext[Deps], timestamp: str | None = None) -> dict:
+    """Statistical anomaly context for one hour: system z-scores vs seasonal trend,
+    de-biased plan deviation per metric (load/solar/wind), top stressed branches vs
+    their p90–p99 normal band, 1-hour momentum, and a ready-to-inject summary_text.
+
+    Reach for this whenever the operator asks "was this hour unusual", "why was it
+    busy", "what were the anomalies", or anything about how a specific hour compares
+    to historical norms. Lightweight — prefer this over deep_dive for most questions.
+    Defaults to the currently-viewed hour when timestamp is omitted.
+
+    timestamp: ISO hour, e.g. "2024-09-13T18:00:00". Omit to use the viewed hour."""
+    return _gst.explain_hour(timestamp or ctx.deps.timestamp)
+
+
+@agent.tool
+def plan_adherence(ctx: RunContext[Deps], day: str | None = None) -> dict:
+    """How closely a calendar day matched the day-ahead plan (de-biased forecast error).
+
+    Returns per metric (load/solar/wind): mean |σ| over the day, the worst hour and
+    its signed σ, and a one-line verdict ("on plan" / "off plan: …"). Use for
+    "did this day go to plan", "how off-plan was the forecast", or "which metric had
+    the biggest surprise" questions. Defaults to the day of the currently-viewed hour.
+
+    day: calendar date, e.g. "2024-07-17". Omit to use the day of the viewed hour."""
+    return _gst.plan_adherence(day or ctx.deps.timestamp[:10])
+
+
+@agent.tool
+def loading_context(
+    ctx: RunContext[Deps], timestamp: str | None = None, top: int = 5
+) -> dict:
+    """Top-N branches by loading at one hour, each annotated with its statistical
+    normal band (p90/p95/p99 for this hour-of-day × workday type) and pct_rank.
+
+    Use for "is this line unusually loaded", "how does today's loading compare to
+    normal", or "which lines are above their typical range" questions. Complements
+    most_loaded_lines (which gives live ranked loadings) with the historical norm.
+    Defaults to the currently-viewed hour.
+
+    timestamp: ISO hour. Omit to use the viewed hour. top: branches to return (default 5)."""
+    return _gst.loading_context(timestamp or ctx.deps.timestamp, top)
+
+
+@agent.tool
+def interesting_days(
+    ctx: RunContext[Deps], start_date: str, end_date: str, n: int = 10
+) -> list[dict]:
+    """Rank the most anomalous grid days in a date window, scored by the largest
+    de-biased z-score across load/solar/wind/line-loading signals. Each day has one
+    clear driver, a score, z-score detail, and peak loading/load context.
+
+    Use for "which days in [period] were most unusual", "flag days worth reviewing",
+    or "what were the biggest events in Q3". This is the ONLY range tool — for a
+    single hour or day use explain_hour, loading_context, or plan_adherence instead.
+
+    start_date: inclusive start, e.g. "2024-09-01".
+    end_date:   inclusive end,   e.g. "2024-09-30".
+    n:          max days to return (default 10)."""
+    return _gst.interesting_days(start_date, end_date, n)
+
+
+@agent.tool
+def deep_dive(ctx: RunContext[Deps], timestamp: str | None = None) -> dict:
+    """Exhaustive statistical breakdown of one hour — verbose; call only on request.
+
+    Returns all system metrics (raw + z), full per-metric plan deviation
+    (forecast/actual/delta/σ), ALL branches at or above their p90 threshold, momentum
+    at 1h and 24h, and the full day plan-adherence context. Expensive context —
+    explain_hour and loading_context answer most questions; use this only when the
+    operator explicitly asks for a full breakdown or deep-dive analysis.
+
+    timestamp: ISO hour. Omit to use the viewed hour."""
+    return _gst.deep_dive(timestamp or ctx.deps.timestamp)
 
 
 # --- streaming runner --------------------------------------------------------
