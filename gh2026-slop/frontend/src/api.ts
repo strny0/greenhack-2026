@@ -21,6 +21,40 @@ export const api = {
   window: (start: number, count: number): Promise<StateFrame[]> =>
     fetch(`/api/window?start=${start}&count=${count}`).then(J),
 
+  // Same as window(), but streams the (large) response body and reports a
+  // 0..1 download fraction. Note: with gzip on the wire, Content-Length is the
+  // compressed size while the body stream yields decompressed bytes, so we
+  // estimate the total from the frame count (~78 KB/frame) rather than trust
+  // the header. Snaps to 1 once the JSON is fully received.
+  windowProgress: async (
+    start: number,
+    count: number,
+    onProgress?: (fraction: number) => void,
+  ): Promise<StateFrame[]> => {
+    const res = await fetch(`/api/window?start=${start}&count=${count}`);
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    const reader = res.body?.getReader();
+    if (!reader) return res.json(); // no streaming support — just parse
+    const estTotal = Math.max(1, count * 78_000);
+    const chunks: Uint8Array[] = [];
+    let received = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      received += value.length;
+      onProgress?.(Math.min(0.99, received / estTotal));
+    }
+    const buf = new Uint8Array(received);
+    let off = 0;
+    for (const c of chunks) {
+      buf.set(c, off);
+      off += c.length;
+    }
+    onProgress?.(1);
+    return JSON.parse(new TextDecoder().decode(buf));
+  },
+
   alerts: (timestamp: string): Promise<{ timestamp: string; alerts: Alert[] }> =>
     fetch(`/api/alerts?timestamp=${encodeURIComponent(timestamp)}`).then(J),
 

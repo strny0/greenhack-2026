@@ -20,6 +20,7 @@ export default function App() {
   const [zoomTo, setZoomTo] = useState<{ kind: "node" | "line"; id: string; nonce: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<"map" | "sld">("sld");
+  const [progress, setProgress] = useState(0);
   const timer = useRef<number | null>(null);
 
   // load meta + initial window
@@ -28,7 +29,13 @@ export default function App() {
       try {
         const m = await api.meta();
         setMeta(m);
-        const w = await api.window(m.default_window.start, m.default_window.count);
+        // meta is in; reserve a sliver of the bar for it, then stream the window
+        setProgress(0.04);
+        const w = await api.windowProgress(
+          m.default_window.start,
+          m.default_window.count,
+          (f) => setProgress(0.04 + f * 0.96),
+        );
         setFrames(w);
         // start at an interesting hour (evening peak ~18:00) if present
         const peak = w.findIndex((f) => f.timestamp.endsWith("T18:00:00"));
@@ -77,8 +84,25 @@ export default function App() {
     );
   if (!meta || !frame)
     return (
-      <div className="flex h-screen items-center justify-center bg-background text-muted-foreground">
-        Loading Smooth Operator…
+      <div className="flex h-screen flex-col items-center justify-center bg-background">
+        <div className="w-72 max-w-[80vw]">
+          <div className="mb-3 text-center text-sm font-medium tracking-wide text-foreground">
+            Loading <span className="smooth-shimmer">Smooth Operator</span>…
+          </div>
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+            <div
+              className="h-full rounded-full bg-primary transition-[width] duration-200 ease-out"
+              style={{ width: `${Math.round(progress * 100)}%` }}
+            />
+          </div>
+          <div className="mt-2 text-center text-xs tabular-nums text-muted-foreground">
+            {progress < 0.04
+              ? "Contacting backend…"
+              : progress < 1
+                ? `Fetching grid state… ${Math.round(progress * 100)}%`
+                : "Rendering…"}
+          </div>
+        </div>
       </div>
     );
 
