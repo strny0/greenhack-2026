@@ -55,12 +55,11 @@ export default function TopBar({
   return (
     <header className="z-10 flex flex-wrap items-center gap-x-4 gap-y-2 border-b bg-card px-4 py-2">
       <div className="flex items-center gap-2.5">
-        <span
-          className="h-2.5 w-2.5 rounded-full bg-emerald-500"
-          style={{ animation: "pulse 1.8s infinite" }}
-        />
         <div>
-          <h1 className="text-base font-semibold tracking-wide">GRID&nbsp;PULSE</h1>
+          <h1 className="flex flex-col text-base font-semibold leading-tight tracking-wide">
+            <span className="smooth-shimmer inline-block">Smooth</span>
+            <span className="pl-5">Operator</span>
+          </h1>
           <div className="hidden text-[11px] text-muted-foreground sm:block">
             ČEPS · transmission situational awareness
           </div>

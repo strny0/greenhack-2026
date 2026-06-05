@@ -156,3 +156,15 @@ async def agent_stream(req: ChatRequest) -> StreamingResponse:
         media_type="application/x-ndjson",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# --- static frontend (single-origin deploy) ----------------------------------
+# Serve the built Vite bundle so one uvicorn process answers both /api/* and the
+# SPA. Mounted last so it only catches paths not claimed by an /api route above.
+# No-op in dev (vite serves the frontend on :5173 and proxies /api here).
+from pathlib import Path  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+
+_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+if _DIST.is_dir():
+    app.mount("/", StaticFiles(directory=_DIST, html=True), name="frontend")

@@ -78,7 +78,7 @@ export default function App() {
   if (!meta || !frame)
     return (
       <div className="flex h-screen items-center justify-center bg-background text-muted-foreground">
-        Loading Grid Pulse…
+        Loading Smooth Operator…
       </div>
     );
 
