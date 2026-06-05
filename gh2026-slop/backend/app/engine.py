@@ -296,17 +296,12 @@ def preload(start: int, count: int) -> int:
     return len(tss)
 
 
-def element_timeseries(
-    element_id: str, kind: str, metric: str, start_ts: str, count: int
-) -> dict:
-    """Metric history for one element across a window of solved frames.
-
-    kind="line" metric in {loading, p_from}; kind="node" metric in
-    {vm_pu, production, consumption, net}.
-    """
-    start_idx = store.timestamps.index(store.nearest_timestamp(start_ts))
-    tss = store.timestamps[start_idx : start_idx + count]
-    t_out, v_out = [], []
+def _series_for(
+    tss: list[str], element_id: str, kind: str, metric: str
+) -> tuple[list[str], list[float | None]]:
+    """Pull one metric for `element_id` across the given solved frames."""
+    t_out: list[str] = []
+    v_out: list[float | None] = []
     for ts in tss:
         frame = base_frame(ts)
         val = None
@@ -325,7 +320,53 @@ def element_timeseries(
                 }.get(metric)
         t_out.append(ts)
         v_out.append(val)
+    return t_out, v_out
+
+
+def element_timeseries(
+    element_id: str, kind: str, metric: str, start_ts: str, count: int
+) -> dict:
+    """Forward metric history for one element (used by /api/timeseries).
+
+    kind="line" metric in {loading, p_from}; kind="node" metric in
+    {vm_pu, production, consumption, net}.
+    """
+    start_idx = store.timestamps.index(store.nearest_timestamp(start_ts))
+    tss = store.timestamps[start_idx : start_idx + count]
+    t_out, v_out = _series_for(tss, element_id, kind, metric)
     return {"element_id": element_id, "kind": kind, "metric": metric, "t": t_out, "v": v_out}
+
+
+def element_window(
+    element_id: str,
+    kind: str,
+    metric: str,
+    center_ts: str,
+    hours_back: int,
+    hours_fwd: int,
+) -> dict:
+    """Bidirectional history around `center_ts`: `hours_back` into the past and
+    `hours_fwd` into the future (inclusive of the centre hour).
+
+    Reports `truncated_past` / `truncated_future` when the window hits a dataset
+    edge so callers can be honest about how much history actually exists.
+    """
+    ci = store.timestamps.index(store.nearest_timestamp(center_ts))
+    n = len(store.timestamps)
+    lo = ci - max(0, hours_back)
+    hi = ci + max(0, hours_fwd)
+    tss = store.timestamps[max(0, lo) : min(n, hi + 1)]
+    t_out, v_out = _series_for(tss, element_id, kind, metric)
+    return {
+        "element_id": element_id,
+        "kind": kind,
+        "metric": metric,
+        "center": store.timestamps[ci],
+        "t": t_out,
+        "v": v_out,
+        "truncated_past": lo < 0,
+        "truncated_future": hi > n - 1,
+    }
 
 
 # --- alerts ------------------------------------------------------------------
