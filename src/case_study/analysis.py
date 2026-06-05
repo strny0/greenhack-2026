@@ -6,15 +6,25 @@ find_interesting_days — ranks all 365 calendar days by anomaly composite score
 """
 from __future__ import annotations
 
+import json
 import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from statsmodels.tsa.seasonal import STL
 
+from . import config
 from .loader import DataStore, ForecastStore, RealtimeStore
+
+# (metric, forecast column, realtime column) — the three day-ahead vs actual pairs
+_SURPRISE_PAIRS = [
+    ("load",  "load_total_mw", "load_mw"),
+    ("solar", "solar_mw",      "solar_mw"),
+    ("wind",  "wind_mw",       "wind_mw"),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -53,13 +63,15 @@ class GridStats:
         fs: ForecastStore,
         rs: RealtimeStore,
         verbose: bool = True,
+        workers: int = 1,
     ) -> "GridStats":
         if verbose:
             print("Building GridStats — single-pass scan of all snapshots…")
 
         # single pass: read each of the 8760 snapshots once for both system metrics
-        # and per-branch loadings (avoids the 2× cost of calling them separately)
-        metrics, branch_df = ds.scan_all()
+        # and per-branch loadings (avoids the 2× cost of calling them separately).
+        # Resumable + tqdm progress bar when verbose; workers>1 parallelizes the scan.
+        metrics, branch_df = ds.scan_all(progress=verbose, workers=workers)
         forecast = fs.system_forecast()
         realtime = rs.system_totals()
 
@@ -80,9 +92,13 @@ class GridStats:
         }
 
         residuals = {}
-        for name, s in series_map.items():
+        series_iter = series_map.items()
+        if verbose:
+            from tqdm import tqdm
+            series_iter = tqdm(list(series_map.items()), desc="STL decompose", unit="series")
+        for name, s in series_iter:
             if verbose:
-                print(f"  STL decomposing {name}…")
+                series_iter.set_postfix_str(name)
             s_clean = s.interpolate().ffill().bfill()
             stl = STL(s_clean, period=24, robust=True)
             res = stl.fit()
@@ -97,19 +113,23 @@ class GridStats:
         branch_pct90, branch_pct95, branch_pct99 = _build_branch_pcts_from_df(branch_df)
 
         # --- forecast error baselines ---
+        # Error is defined as (actual − forecast) = the "surprise".  We store the
+        # systematic bias (mean) AND std so callers can DE-BIAS: this dataset's DA
+        # forecasts are scaled ~+23% (load) / +20% (solar) high every hour, so the
+        # raw delta is mostly constant bias — the real signal is the de-biased
+        # z-score  (surprise − bias) / std.
         if verbose:
             print("  Computing forecast error baselines…")
         fc_errors: dict[str, dict[str, float]] = {}
-        pairs = [
-            ("solar",  "solar_mw",       rt_aligned.get("solar_mw")),
-            ("wind",   "wind_mw",         rt_aligned.get("wind_mw")),
-            ("load",   "load_total_mw",   rt_aligned.get("load_mw")),
-        ]
-        for name, fc_col, rt_series in pairs:
-            if fc_col not in fc_aligned.columns or rt_series is None:
+        for name, fc_col, rt_col in _SURPRISE_PAIRS:
+            if fc_col not in fc_aligned.columns or rt_col not in rt_aligned.columns:
                 continue
-            err = (fc_aligned[fc_col] - rt_series).dropna()
-            fc_errors[name] = {"mae": float(err.abs().mean()), "std": float(err.std())}
+            err = (rt_aligned[rt_col] - fc_aligned[fc_col]).dropna()  # actual − forecast
+            fc_errors[name] = {
+                "bias": float(err.mean()),
+                "std": float(err.std()) or 1.0,
+                "mae": float(err.abs().mean()),
+            }
 
         if verbose:
             print("  Done.")
@@ -145,6 +165,23 @@ def _build_branch_pcts_from_df(
     p95 = df[branch_cols].groupby(level=["hour", "is_workday"]).quantile(0.95)
     p99 = df[branch_cols].groupby(level=["hour", "is_workday"]).quantile(0.99)
     return p90, p95, p99
+
+
+def surprise_series(gs: GridStats) -> pd.DataFrame:
+    """Hourly DE-BIASED forecast surprise z-score per metric (load/solar/wind).
+
+    z = ((actual − forecast) − bias) / std, using the baselines in gs.forecast_error.
+    Positive = more than the day-ahead plan (after removing the standing bias),
+    so |z| is "how off-plan this hour really was".  Indexed like gs.metrics.
+    """
+    out: dict[str, pd.Series] = {}
+    for name, fc_col, rt_col in _SURPRISE_PAIRS:
+        base = gs.forecast_error.get(name)
+        if base is None or fc_col not in gs.forecast.columns or rt_col not in gs.realtime.columns:
+            continue
+        err = gs.realtime[rt_col] - gs.forecast[fc_col]      # actual − forecast
+        out[name] = (err - base["bias"]) / (base["std"] or 1.0)
+    return pd.DataFrame(out)
 
 
 # ---------------------------------------------------------------------------
@@ -201,12 +238,18 @@ def explain_hour(timestamp: str, gs: GridStats, ds: "DataStore | None" = None) -
             if fc_col in fc.index and rt_col in rt.index:
                 delta_mw = round(float(rt[rt_col]) - float(fc[fc_col]), 1)
                 base = float(fc[fc_col]) or 1.0
-                fc_deltas[metric] = {
+                entry = {
                     "forecast_mw": round(float(fc[fc_col]), 1),
                     "actual_mw":   round(float(rt[rt_col]), 1),
                     "delta_mw":    delta_mw,
                     "delta_pct":   round(100 * delta_mw / abs(base), 1),
                 }
+                # de-biased surprise: how off-plan vs the operator's NORMAL error.
+                # (raw delta is mostly the standing ~+20% forecast bias, not signal.)
+                bl = gs.forecast_error.get(metric)
+                if bl is not None:
+                    entry["surprise_z"] = round((delta_mw - bl["bias"]) / (bl["std"] or 1.0), 2)
+                fc_deltas[metric] = entry
 
     # --- temporal momentum ---
     momentum: dict = {}
@@ -272,8 +315,10 @@ def explain_hour(timestamp: str, gs: GridStats, ds: "DataStore | None" = None) -
     if fc_deltas:
         parts = []
         for metric, d in fc_deltas.items():
-            parts.append(f"{metric} {d['delta_mw']:+.0f} MW ({d['delta_pct']:+.1f}% vs forecast)")
-        lines.append("Forecast error: " + ", ".join(parts))
+            sz = d.get("surprise_z")
+            sz_txt = f", {sz:+.1f}σ" if sz is not None else ""
+            parts.append(f"{metric} {d['delta_mw']:+.0f} MW ({d['delta_pct']:+.1f}%{sz_txt})")
+        lines.append("Plan deviation (de-biased): " + ", ".join(parts))
     if momentum:
         m1h_load = momentum.get("load_delta_1h_mw")
         m1h_ldg = momentum.get("loading_delta_1h_pct")
@@ -301,83 +346,131 @@ def explain_hour(timestamp: str, gs: GridStats, ds: "DataStore | None" = None) -
 # ---------------------------------------------------------------------------
 
 def find_interesting_days(gs: GridStats, n: int = 20) -> pd.DataFrame:
-    """Rank all calendar days by anomaly composite score.
+    """Rank all calendar days by their single biggest de-biased anomaly.
 
-    Scores each day by:
-      composite_z        — mean |z-score| across 5 system metrics
-      max_branch_stress  — peak max_line_loading_pct for the day
-      forecast_error_mw  — mean abs forecast error (solar+wind+load) that day
-      n_alert_hours      — hours with max_line_loading >= LINE_LOADING_ALERT
+    "Max-of-surprises": each day's score is the largest of four daily |z| signals,
+    so a flagged day always has one clear, narratable driver (the ``driver`` column):
+
+      load_surprise_z   — de-biased day-ahead load plan deviation  ("on plan?")
+      solar_surprise_z  — de-biased solar plan deviation
+      wind_surprise_z   — de-biased wind plan deviation  (the noisiest series)
+      loading_z         — max_line_loading anomaly vs its own seasonal pattern (STL)
+
+    The slack series is intentionally dropped (22 MW noise floor → spurious z's).
+    Raw, human-readable context columns (peak_loading_pct, peak_load_mw) are kept
+    so the flag is explainable, not a black box.
     """
-    from . import config
+    by_date = lambda s: s.groupby(s.index.date)  # noqa: E731
 
-    df = gs.residuals.copy()
-    df["date"] = df.index.date
+    daily: dict[str, pd.Series] = {}
 
-    # composite_z: mean of absolute z-scores across all metrics
-    for col in gs.residuals.columns:
-        std = gs.residual_std.get(col, 1.0) or 1.0
-        df[f"abs_z_{col}"] = df[col].abs() / std
+    # de-biased forecast surprise per metric → daily mean |z|
+    surprise = surprise_series(gs)
+    for metric in surprise.columns:
+        daily[f"{metric}_surprise_z"] = by_date(surprise[metric].abs()).mean()
 
-    z_cols = [c for c in df.columns if c.startswith("abs_z_")]
-    daily_z = df.groupby("date")[z_cols].mean().mean(axis=1).rename("composite_z")
+    # grid-stress anomaly: |STL residual| of max_line_loading, std-normalised
+    if "max_loading" in gs.residuals.columns:
+        std = gs.residual_std.get("max_loading", 1.0) or 1.0
+        loading_z = (gs.residuals["max_loading"].abs() / std)
+        daily["loading_z"] = by_date(loading_z).mean()
 
-    # max branch stress
-    daily_max_loading = (
-        gs.metrics["max_line_loading_pct"]
-        .groupby(gs.metrics.index.date)
-        .max()
-        .rename("max_branch_stress_pct")
+    df = pd.DataFrame(daily)
+
+    # explainability context (raw units, not part of the score)
+    df["peak_loading_pct"] = by_date(gs.metrics["max_line_loading_pct"]).max()
+    df["peak_load_mw"] = by_date(gs.metrics["total_load_mw"]).max()
+
+    # max-of-surprises score + which signal drove it
+    z_cols = [c for c in df.columns if c.endswith("_z")]
+    df["score"] = df[z_cols].max(axis=1)
+    df["driver"] = (
+        df[z_cols].idxmax(axis=1)
+        .str.replace("_surprise_z", "", regex=False)
+        .str.replace("_z", "", regex=False)
     )
 
-    # n_alert_hours
-    n_alerts = (
-        (gs.metrics["max_line_loading_pct"] >= config.LINE_LOADING_ALERT)
-        .groupby(gs.metrics.index.date)
-        .sum()
-        .rename("n_alert_hours")
-    )
-
-    # forecast error (if available)
-    fc_err_parts = []
-    if not gs.forecast.empty and not gs.realtime.empty:
-        for fc_col, rt_col in [("solar_mw", "solar_mw"), ("wind_mw", "wind_mw"), ("load_total_mw", "load_mw")]:
-            if fc_col in gs.forecast.columns and rt_col in gs.realtime.columns:
-                err = (gs.forecast[fc_col] - gs.realtime[rt_col]).abs()
-                fc_err_parts.append(err)
-    if fc_err_parts:
-        total_err = sum(fc_err_parts)
-        daily_fc_err = total_err.groupby(total_err.index.date).mean().rename("forecast_error_mw")
-    else:
-        daily_fc_err = pd.Series(dtype=float, name="forecast_error_mw")
-
-    result = pd.concat([daily_z, daily_max_loading, n_alerts, daily_fc_err], axis=1)
-    result.index = pd.to_datetime(result.index)
-    result = result.sort_values("composite_z", ascending=False)
-    return result.head(n)
+    df.index = pd.to_datetime(df.index)
+    ordered = ["score", "driver"] + z_cols + ["peak_loading_pct", "peak_load_mw"]
+    return df[ordered].sort_values("score", ascending=False).head(n)
 
 
 # ---------------------------------------------------------------------------
-# smoke test
+# artifact persistence
+# ---------------------------------------------------------------------------
+
+def _peak_hour_ts(gs: GridStats, day) -> str:
+    """ISO timestamp of the peak max-line-loading hour on a given calendar day."""
+    day_mask = gs.metrics.index.date == pd.Timestamp(day).date()
+    return gs.metrics.loc[day_mask]["max_line_loading_pct"].idxmax().isoformat()
+
+
+def save_artifacts(
+    gs: GridStats,
+    ds: DataStore,
+    out_dir: "Path | None" = None,
+    n_days: int = 30,
+    verbose: bool = True,
+) -> Path:
+    """Persist the build outputs so the pitch day can be picked without rescanning.
+
+    Writes to ``out_dir`` (default config.OUTPUT_DIR):
+      metrics.parquet, residuals.parquet, branch_loadings.parquet,
+      interesting_days.csv, top_day_explain.json
+    """
+    out = Path(out_dir) if out_dir else config.OUTPUT_DIR
+    out.mkdir(parents=True, exist_ok=True)
+
+    gs.metrics.to_parquet(out / "metrics.parquet")
+    gs.residuals.to_parquet(out / "residuals.parquet")
+
+    _, branch = ds.scan_all()  # cached from build() — free
+    branch.to_parquet(out / "branch_loadings.parquet")
+
+    days = find_interesting_days(gs, n=n_days)
+    days.to_csv(out / "interesting_days.csv")
+
+    if len(days):
+        top_ts = _peak_hour_ts(gs, days.index[0])
+        explain = explain_hour(top_ts, gs, ds=ds)
+        (out / "top_day_explain.json").write_text(
+            json.dumps(explain, indent=2, default=str), encoding="utf-8"
+        )
+
+    if verbose:
+        print(f"\nArtifacts written to: {out}")
+    return out
+
+
+# ---------------------------------------------------------------------------
+# full build entrypoint
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    import os
+    import sys
+
     from .loader import DataStore, ForecastStore, RealtimeStore
+
+    # workers: CLI arg overrides; else default to (cores-1) capped at 8.
+    # 1 = serial. Parallel path needs this __main__ guard (Windows spawn).
+    default_workers = max(1, min(8, (os.cpu_count() or 2) - 1))
+    workers = int(sys.argv[1]) if len(sys.argv) > 1 else default_workers
+    print(f"Scanning with {workers} worker process(es) "
+          f"(override: python -m case_study.analysis <N>)")
 
     ds = DataStore()
     fs = ForecastStore()
     rs = RealtimeStore()
 
-    gs = GridStats.build(ds, fs, rs)
+    gs = GridStats.build(ds, fs, rs, verbose=True, workers=workers)
+    out = save_artifacts(gs, ds, n_days=30)
 
     print("\nTop 5 interesting days:")
     top = find_interesting_days(gs, n=5)
     print(top.to_string())
 
     print("\nSample explain_hour for the top day:")
-    top_ts = gs.metrics.loc[
-        gs.metrics.index.date == top.index[0].date()
-    ]["max_line_loading_pct"].idxmax().isoformat()
-
+    top_ts = _peak_hour_ts(gs, top.index[0])
     result = explain_hour(top_ts, gs, ds=ds)
     print(result["summary_text"])

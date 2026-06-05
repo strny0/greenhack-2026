@@ -9,6 +9,7 @@ No module-level singletons; all constructors default to config.DATA_DIR.
 """
 from __future__ import annotations
 
+import json
 import warnings
 from datetime import datetime
 from pathlib import Path
@@ -31,6 +32,93 @@ def _parse_ts(filename: str) -> str:
 
 def _ts_to_filename(ts: str) -> str:
     return datetime.fromisoformat(ts).strftime(_SNAP_FMT) + ".json"
+
+
+def _read_jsonl(path: Path) -> list[dict]:
+    """Read a JSONL checkpoint, skipping any blank/partial trailing line."""
+    rows: list[dict] = []
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                # truncated last line from a cancelled run — ignore
+                continue
+    return rows
+
+
+def _dedupe_by_ts(rows: list[dict]) -> list[dict]:
+    """Collapse rows to one per ``timestamp`` (keep last write)."""
+    by_ts = {r["timestamp"]: r for r in rows if "timestamp" in r}
+    return list(by_ts.values())
+
+
+# ---------------------------------------------------------------------------
+# snapshot extraction (module-level so it is picklable for multiprocessing)
+# ---------------------------------------------------------------------------
+
+def _extract_rows(net, ts: str) -> tuple[dict, dict]:
+    """Pull (metric_row, branch_row) out of an already-deserialized net.
+
+    No load-flow re-run — reads the embedded res_* result tables.  Shared by the
+    serial path (DataStore._scan_one) and the worker path (_scan_file_worker).
+    """
+    converged = bool(getattr(net, "converged", False))
+
+    total_load = float(net.load["p_mw"].sum()) if len(net.load) else 0.0
+
+    if converged and len(net.res_gen):
+        total_gen = float(net.res_gen["p_mw"].sum())
+    elif len(net.gen):
+        total_gen = float(net.gen["p_mw"].sum())
+    else:
+        total_gen = 0.0
+
+    slack_mw = float(net.res_ext_grid["p_mw"].sum()) if (converged and len(net.res_ext_grid)) else 0.0
+
+    max_loading = 0.0
+    n_overloaded = 0
+    b_row: dict = {"timestamp": ts}
+
+    if converged and len(net.res_line):
+        loadings = net.res_line["loading_percent"].dropna()
+        if len(loadings):
+            max_loading = float(loadings.max())
+            n_overloaded = int((loadings >= config.LINE_LOADING_ALERT).sum())
+        for idx, r in net.line.iterrows():
+            val = net.res_line.at[idx, "loading_percent"] if idx in net.res_line.index else float("nan")
+            b_row[str(r["name"])] = None if (val != val) else round(float(val), 2)
+
+    m_row = {
+        "timestamp": ts,
+        "total_load_mw": round(total_load, 2),
+        "total_gen_mw": round(total_gen, 2),
+        "slack_mw": round(slack_mw, 2),
+        "max_line_loading_pct": round(max_loading, 2),
+        "n_overloaded_lines": n_overloaded,
+        "converged": converged,
+    }
+    return m_row, b_row
+
+
+def _scan_file_worker(task: tuple[str, str, str]) -> tuple[dict, dict]:
+    """ProcessPool worker: deserialize one snapshot file and extract its rows.
+
+    Takes (snapshots_dir, filename, timestamp) so nothing but plain strings cross
+    the process boundary; returns the two plain-dict rows (picklable).
+    """
+    snapshots_dir, filename, ts = task
+    net = pp.from_json(str(Path(snapshots_dir) / filename))
+    return _extract_rows(net, ts)
+
+
+def _worker_init() -> None:
+    """Silence pandapower's import-time warnings inside each spawned worker."""
+    import warnings as _w
+    _w.filterwarnings("ignore")
 
 
 # ---------------------------------------------------------------------------
@@ -170,60 +258,112 @@ class DataStore:
             "converged": converged,
         }
 
-    def scan_all(self) -> tuple["pd.DataFrame", "pd.DataFrame"]:
+    def _scan_one(self, ts: str) -> tuple[dict, dict]:
+        """Read one snapshot; return its (metric_row, branch_row) dicts.
+
+        Serial per-snapshot work shared by scan_all().  Both dicts carry the
+        ``timestamp`` key so they can be checkpointed and re-aligned on resume.
+        """
+        return _extract_rows(self.read_net(ts), ts)
+
+    def scan_all(
+        self, progress: bool = False, resume: bool = True, workers: int = 1
+    ) -> tuple["pd.DataFrame", "pd.DataFrame"]:
         """Single pass over all snapshots; returns (metrics_df, branch_df).
 
         metrics_df — system-level metrics per timestamp (total_load, max_loading, …)
         branch_df  — per-branch loading_percent per timestamp (cols = branch names)
 
-        Both DataFrames share the same datetime index.  Reading each snapshot once
-        is ~2× faster than calling all_metrics_df() + a separate branch scan.
-        Cached after the first call.
+        Both DataFrames share the same datetime index.  Cached in memory after the
+        first call.
+
+        Resumable: each snapshot is appended to JSONL checkpoints under
+        ``config.CACHE_DIR`` as it is scanned.  If the process is cancelled, calling
+        scan_all() again skips the already-scanned snapshots (``resume=True``).  Pass
+        ``resume=False`` (or delete CACHE_DIR) to force a clean rescan.  Set
+        ``progress=True`` for a tqdm bar over the remaining snapshots.
+
+        ``workers > 1`` deserializes snapshots in a ProcessPoolExecutor (the scan is
+        CPU-bound in pp.from_json, so processes — not threads — give the speedup).
+        The main process stays the *single writer* of the checkpoints, so resume and
+        on-disk consistency are identical to the serial path; only the order in which
+        snapshots are scanned differs (rebuild sorts by timestamp anyway).  NOTE:
+        with workers>1 the caller must be under an ``if __name__ == "__main__":``
+        guard (Windows spawn) — the package's ``python -m case_study.analysis``
+        entrypoint already is.
         """
         if self._metrics_cache is not None:
             return self._metrics_cache, self._branch_cache  # type: ignore[return-value]
 
-        metric_rows: list[dict] = []
-        branch_rows: list[dict] = []
+        cache_dir = config.CACHE_DIR
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        m_path = cache_dir / "scan_metrics.jsonl"
+        b_path = cache_dir / "scan_branch.jsonl"
 
-        for ts in self._timestamps:
-            net = self.read_net(ts)
-            converged = bool(getattr(net, "converged", False))
+        if not resume:
+            m_path.unlink(missing_ok=True)
+            b_path.unlink(missing_ok=True)
 
-            total_load = float(net.load["p_mw"].sum()) if len(net.load) else 0.0
+        done: set[str] = set()
+        if resume and m_path.exists():
+            done = {row["timestamp"] for row in _read_jsonl(m_path) if "timestamp" in row}
 
-            if converged and len(net.res_gen):
-                total_gen = float(net.res_gen["p_mw"].sum())
-            elif len(net.gen):
-                total_gen = float(net.gen["p_mw"].sum())
-            else:
-                total_gen = 0.0
+        todo = [ts for ts in self._timestamps if ts not in done]
 
-            slack_mw = float(net.res_ext_grid["p_mw"].sum()) if (converged and len(net.res_ext_grid)) else 0.0
+        if todo:
+            workers = max(1, int(workers))
+            bar = None
+            if progress:
+                from tqdm import tqdm
+                bar = tqdm(
+                    total=len(self._timestamps),
+                    initial=len(done),
+                    desc="Scanning snapshots",
+                    unit="snap",
+                )
+            mf = m_path.open("a", encoding="utf-8")
+            bf = b_path.open("a", encoding="utf-8")
+            try:
+                if workers > 1:
+                    from concurrent.futures import ProcessPoolExecutor
+                    tasks = [
+                        (str(self._snapshots_dir), self._file_by_ts[ts], ts)
+                        for ts in todo
+                    ]
+                    chunksize = max(1, min(64, len(tasks) // (workers * 8) or 1))
+                    with ProcessPoolExecutor(
+                        max_workers=workers, initializer=_worker_init
+                    ) as ex:
+                        results = ex.map(_scan_file_worker, tasks, chunksize=chunksize)
+                        for i, (m_row, b_row) in enumerate(results):
+                            bf.write(json.dumps(b_row) + "\n")
+                            mf.write(json.dumps(m_row) + "\n")
+                            if i % 50 == 0:
+                                bf.flush()
+                                mf.flush()
+                            if bar is not None:
+                                bar.update(1)
+                else:
+                    for i, ts in enumerate(todo):
+                        m_row, b_row = self._scan_one(ts)
+                        bf.write(json.dumps(b_row) + "\n")
+                        mf.write(json.dumps(m_row) + "\n")
+                        if i % 50 == 0:
+                            bf.flush()
+                            mf.flush()
+                        if bar is not None:
+                            bar.update(1)
+            finally:
+                bf.flush()
+                mf.flush()
+                bf.close()
+                mf.close()
+                if bar is not None:
+                    bar.close()
 
-            max_loading = 0.0
-            n_overloaded = 0
-            b_row: dict = {"timestamp": ts}
-
-            if converged and len(net.res_line):
-                loadings = net.res_line["loading_percent"].dropna()
-                if len(loadings):
-                    max_loading = float(loadings.max())
-                    n_overloaded = int((loadings >= config.LINE_LOADING_ALERT).sum())
-                for idx, r in net.line.iterrows():
-                    val = net.res_line.at[idx, "loading_percent"] if idx in net.res_line.index else float("nan")
-                    b_row[str(r["name"])] = None if (val != val) else round(float(val), 2)
-
-            metric_rows.append({
-                "timestamp": ts,
-                "total_load_mw": round(total_load, 2),
-                "total_gen_mw": round(total_gen, 2),
-                "slack_mw": round(slack_mw, 2),
-                "max_line_loading_pct": round(max_loading, 2),
-                "n_overloaded_lines": n_overloaded,
-                "converged": converged,
-            })
-            branch_rows.append(b_row)
+        # rebuild from the full checkpoint files (dedupe absorbs any partial write)
+        metric_rows = _dedupe_by_ts(_read_jsonl(m_path))
+        branch_rows = _dedupe_by_ts(_read_jsonl(b_path))
 
         def _to_df(rows: list[dict], ts_col: str = "timestamp") -> pd.DataFrame:
             df = pd.DataFrame(rows)
@@ -234,9 +374,9 @@ class DataStore:
         self._branch_cache = _to_df(branch_rows)
         return self._metrics_cache, self._branch_cache
 
-    def all_metrics_df(self) -> pd.DataFrame:
+    def all_metrics_df(self, progress: bool = False, workers: int = 1) -> pd.DataFrame:
         """Convenience wrapper — returns only the system metrics DataFrame."""
-        metrics, _ = self.scan_all()
+        metrics, _ = self.scan_all(progress=progress, workers=workers)
         return metrics
 
 
