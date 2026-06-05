@@ -10,6 +10,10 @@ STATIC_DIR    = DATA_DIR / "static"
 FORECASTS_DIR = DATA_DIR / "forecasts"
 REALTIME_DIR  = DATA_DIR / "realtime"
 
+# Build artifacts + resumable scan checkpoints (next to the package)
+OUTPUT_DIR = Path(__file__).resolve().parent / "outputs"
+CACHE_DIR  = OUTPUT_DIR / "cache"
+
 # California bounding box (NREL-118 regions: r1=Bay Area, r2=Sacramento, r3=San Diego)
 LON_MIN, LON_MAX = -124.5, -114.5
 LAT_MIN, LAT_MAX =   32.5,   42.0
