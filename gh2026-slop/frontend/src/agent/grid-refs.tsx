@@ -31,7 +31,7 @@ const PREFIX_KIND: Record<string, GridKind> = {
   trafo: "line",
 };
 const TOKEN_RE = /\b(bus|branch|line|trafo)_[A-Za-z0-9_]+/g;
-const SKIP_TAGS = new Set(["a", "code", "pre"]);
+const EXACT_RE = /^(bus|branch|line|trafo)_[A-Za-z0-9_]+$/;
 
 type HNode = {
   type: string;
@@ -50,12 +50,7 @@ function splitText(value: string): HNode[] {
     const token = m[0];
     const kind = PREFIX_KIND[m[1]];
     if (m.index > last) out.push({ type: "text", value: value.slice(last, m.index) });
-    out.push({
-      type: "element",
-      tagName: "a",
-      properties: { className: ["grid-ref"], title: `${kind}:${token}` },
-      children: [{ type: "text", value: token }],
-    });
+    out.push(gridAnchor(kind, token));
     last = m.index + token.length;
   }
   if (out.length === 0) return [{ type: "text", value }];
@@ -63,23 +58,47 @@ function splitText(value: string): HNode[] {
   return out;
 }
 
-/** rehype plugin: wrap grid-identifier candidates in text nodes (skip code/links). */
+function gridAnchor(kind: GridKind, token: string): HNode {
+  return {
+    type: "element",
+    tagName: "a",
+    properties: { className: ["grid-ref"], title: `${kind}:${token}` },
+    children: [{ type: "text", value: token }],
+  };
+}
+
+/**
+ * rehype plugin: linkify grid identifiers. Handles plain text *and* inline code
+ * (the model often wraps the headline id in backticks). Skips links and fenced
+ * code blocks (<pre>).
+ */
 export function rehypeGridRefs() {
-  const walk = (node: HNode) => {
+  const walk = (node: HNode, skip: boolean) => {
     if (!node.children) return;
-    const skip = node.type === "element" && SKIP_TAGS.has(node.tagName ?? "");
+    const tag = node.type === "element" ? node.tagName : "";
+    const childSkip = skip || tag === "a" || tag === "pre";
     const next: HNode[] = [];
     for (const child of node.children) {
-      if (child.type === "text" && !skip && child.value) {
+      if (childSkip) {
+        walk(child, childSkip);
+        next.push(child);
+      } else if (child.type === "text" && child.value) {
         next.push(...splitText(child.value));
+      } else if (child.type === "element" && child.tagName === "code") {
+        // Inline code that is *exactly* one grid id -> swap the code box for a
+        // chip; anything else is left as normal inline code.
+        const text = child.children?.length === 1 ? child.children[0].value ?? "" : "";
+        const m = EXACT_RE.exec(text);
+        if (m) next.push(gridAnchor(PREFIX_KIND[m[1]], text));
+        else next.push(child);
       } else {
-        walk(child);
+        walk(child, childSkip);
         next.push(child);
       }
     }
     node.children = next;
   };
-  return (tree: HNode) => walk(tree);
+  return (tree: HNode) => walk(tree, false);
 }
 
 function GridChip({ kind, id, children }: { kind: GridKind; id: string; children?: ReactNode }) {
