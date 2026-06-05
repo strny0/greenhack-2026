@@ -1,1 +1,1 @@
-{"root":["./src/App.tsx","./src/api.ts","./src/main.tsx","./src/types.ts","./src/components/DetailPanel.tsx","./src/components/Legend.tsx","./src/components/MapView.tsx","./src/components/Sidebar.tsx","./src/components/TopBar.tsx"],"version":"5.9.3"}
+{"root":["./src/App.tsx","./src/api.ts","./src/main.tsx","./src/types.ts","./src/components/DetailPanel.tsx","./src/components/Legend.tsx","./src/components/MapView.tsx","./src/components/Sidebar.tsx","./src/components/SldView.tsx","./src/components/TopBar.tsx","./src/components/styling.ts"],"version":"5.9.3"}

@@ -88,6 +88,8 @@ export interface Meta {
   timestamps: string[];
   default_window: { start: number; count: number };
   bbox: { lon_min: number; lon_max: number; lat_min: number; lat_max: number };
+  sld_coords: Record<string, [number, number]>;
+  sld_bbox: { x_min: number; x_max: number; y_min: number; y_max: number };
   thresholds: Record<string, number>;
   suggested_questions: string[];
   engine: string;

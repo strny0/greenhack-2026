@@ -42,6 +42,7 @@ class DataStore:
         self._file_by_ts: dict[str, str] = {}
         self._projector: GeoProjector | None = None
         self.bus_lonlat: dict[str, tuple[float, float]] = {}
+        self.bus_sld: dict[str, tuple[float, float]] = {}
         self.bus_renewable: dict[str, dict] = {}  # bus_name -> {solar_mw, wind_mw}
         self._discover()
         self._init_projector()
@@ -71,10 +72,12 @@ class DataStore:
         self._projector = GeoProjector(list(geo.x), list(geo.y))
         # cache bus_name -> (lon, lat)
         for idx, row in net.bus.iterrows():
-            lon, lat = self._projector.to_lonlat(
-                float(geo.at[idx, "x"]), float(geo.at[idx, "y"])
-            )
-            self.bus_lonlat[str(row["name"])] = (round(lon, 5), round(lat, 5))
+            x = float(geo.at[idx, "x"])
+            y = float(geo.at[idx, "y"])
+            lon, lat = self._projector.to_lonlat(x, y)
+            name = str(row["name"])
+            self.bus_lonlat[name] = (round(lon, 5), round(lat, 5))
+            self.bus_sld[name] = (round(x, 2), round(y, 2))
 
     def _init_static(self) -> None:
         """Aggregate solar/wind capacity per bus from static/gens.csv."""
@@ -103,6 +106,16 @@ class DataStore:
     def projector(self) -> GeoProjector:
         assert self._projector is not None
         return self._projector
+
+    @property
+    def sld_bbox(self) -> dict[str, float]:
+        p = self.projector
+        return {
+            "x_min": p.x_min,
+            "x_max": p.x_max,
+            "y_min": p.y_min,
+            "y_max": p.y_max,
+        }
 
     def has(self, timestamp: str) -> bool:
         return timestamp in self._file_by_ts

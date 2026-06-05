@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import type { Meta, StateFrame } from "./types";
 import MapView, { Selection } from "./components/MapView";
+import SldView from "./components/SldView";
 import TopBar from "./components/TopBar";
 import Legend from "./components/Legend";
 import DetailPanel from "./components/DetailPanel";
@@ -15,6 +16,7 @@ export default function App() {
   const [selected, setSelected] = useState<Selection | null>(null);
   const [highlight, setHighlight] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
+  const [mode, setMode] = useState<"map" | "sld">("sld");
   const timer = useRef<number | null>(null);
 
   // load meta + initial window
@@ -81,16 +83,28 @@ export default function App() {
         }}
         playing={playing}
         togglePlay={() => setPlaying((p) => !p)}
+        mode={mode}
+        onModeChange={setMode}
       />
       <div className="main">
         <div className="map-wrap">
-          <MapView
-            frame={frame}
-            meta={meta}
-            highlight={highlight}
-            selected={selected}
-            onSelect={setSelected}
-          />
+          {mode === "map" ? (
+            <MapView
+              frame={frame}
+              meta={meta}
+              highlight={highlight}
+              selected={selected}
+              onSelect={setSelected}
+            />
+          ) : (
+            <SldView
+              frame={frame}
+              meta={meta}
+              highlight={highlight}
+              selected={selected}
+              onSelect={setSelected}
+            />
+          )}
           <Legend />
           {(selectedNode || selectedLine) && (
             <DetailPanel

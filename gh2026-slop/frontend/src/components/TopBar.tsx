@@ -7,6 +7,8 @@ interface Props {
   setIdx: (i: number) => void;
   playing: boolean;
   togglePlay: () => void;
+  mode: "map" | "sld";
+  onModeChange: (m: "map" | "sld") => void;
 }
 
 const fmt = (ts: string) =>
@@ -18,7 +20,7 @@ const fmt = (ts: string) =>
     minute: "2-digit",
   });
 
-export default function TopBar({ frame, frames, idx, setIdx, playing, togglePlay }: Props) {
+export default function TopBar({ frame, frames, idx, setIdx, playing, togglePlay, mode, onModeChange }: Props) {
   const s = frame.summary;
   return (
     <div className="topbar">
@@ -28,6 +30,27 @@ export default function TopBar({ frame, frames, idx, setIdx, playing, togglePlay
           <h1>GRID&nbsp;PULSE</h1>
           <div className="sub">ČEPS · transmission situational awareness</div>
         </div>
+      </div>
+
+      <div className="view-toggle" role="tablist" aria-label="Visualization mode">
+        <button
+          role="tab"
+          aria-selected={mode === "map"}
+          className={"view-toggle-btn" + (mode === "map" ? " active" : "")}
+          onClick={() => onModeChange("map")}
+          title="Map view"
+        >
+          🗺 Map
+        </button>
+        <button
+          role="tab"
+          aria-selected={mode === "sld"}
+          className={"view-toggle-btn" + (mode === "sld" ? " active" : "")}
+          onClick={() => onModeChange("sld")}
+          title="Schematic (single-line diagram) view"
+        >
+          ▦ Schematic
+        </button>
       </div>
 
       <div className="kpis">
