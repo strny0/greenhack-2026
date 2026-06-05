@@ -50,10 +50,10 @@ def meta() -> dict:
         "timestamps": store.timestamps,
         "default_window": {"start": config.PRELOAD_START, "count": config.PRELOAD_FRAMES},
         "bbox": {
-            "lon_min": config.CZ_LON_MIN,
-            "lon_max": config.CZ_LON_MAX,
-            "lat_min": config.CZ_LAT_MIN,
-            "lat_max": config.CZ_LAT_MAX,
+            "lon_min": config.LON_MIN,
+            "lon_max": config.LON_MAX,
+            "lat_min": config.LAT_MIN,
+            "lat_max": config.LAT_MAX,
         },
         "sld_coords": store.bus_sld,
         "sld_bbox": store.sld_bbox,
@@ -135,6 +135,7 @@ async def weather_endpoint(timestamp: str | None = Query(None)) -> dict:
 class ChatRequest(BaseModel):
     messages: list[dict]
     timestamp: str
+    selection: dict | None = None  # {kind: "node"|"line", id} the operator has selected
 
 
 @app.post("/api/chat")
@@ -151,7 +152,7 @@ async def agent_stream(req: ChatRequest) -> StreamingResponse:
     """Tool-calling dispatcher agent. Streams NDJSON events (text deltas, tool
     calls, tool results) consumed by the assistant-ui custom runtime."""
     return StreamingResponse(
-        stream_agent(req.messages, req.timestamp),
+        stream_agent(req.messages, req.timestamp, req.selection),
         media_type="application/x-ndjson",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

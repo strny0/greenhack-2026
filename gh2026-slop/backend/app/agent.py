@@ -57,6 +57,8 @@ the operator is currently viewing). Use them — never invent numbers.
 
 Working style:
 - Decide which tool(s) answer the question, call them, then summarise.
+- To follow connectivity ("what connects to this bus", tracing a corridor, \
+walking the grid), use bus_neighbors (raise hops to 2-3 for a wider view).
 - Be concise and operational: lead with the answer, then a one-line reason.
 - Use line/bus identifiers exactly as the tools return them.
 - For "vs yesterday / last week / earlier today" or "what changed" questions, use \
@@ -94,10 +96,18 @@ SUGGESTED_QUESTIONS = [
 
 
 @dataclass
+class Selection:
+    kind: str  # "node" | "line"
+    id: str
+
+
+@dataclass
 class Deps:
-    """Per-request context. `timestamp` is the hour the operator is viewing."""
+    """Per-request context: the hour the operator is viewing, and whatever they
+    currently have selected on the map (if anything)."""
 
     timestamp: str
+    selection: Selection | None = None
 
 
 def _model():
@@ -111,6 +121,35 @@ agent: Agent[Deps, str] = Agent(
     system_prompt=SYSTEM_PROMPT,
     model_settings=ModelSettings(temperature=0.2, max_tokens=900),
 )
+
+
+@agent.system_prompt
+def _selection_context(ctx: RunContext[Deps]) -> str:
+    """Tell the model what the operator currently has selected on the map, so
+    deictic references ("this line", "the selected bus", "it", "here") resolve."""
+    sel = ctx.deps.selection
+    if not sel:
+        return ""
+    f = engine.base_frame(ctx.deps.timestamp)
+    if sel.kind == "node":
+        n = next((x for x in f.nodes if x.id == sel.id), None)
+        if n is None:
+            return ""
+        return (
+            f"OPERATOR SELECTION: the operator currently has bus {n.id} selected on "
+            f"the map (type {n.type}, {n.v_nominal_kv} kV, voltage {n.vm_pu} p.u., "
+            f"net {n.net_mw} MW, state {n.state}). When they say 'this bus', 'this "
+            f"node', 'the selected one', or 'here' with no other id, they mean {n.id}."
+        )
+    l = next((x for x in f.lines if x.id == sel.id), None)
+    if l is None:
+        return ""
+    return (
+        f"OPERATOR SELECTION: the operator currently has branch {l.id} selected on the "
+        f"map ({l.kind} {l.from_node}->{l.to_node}, loading {l.loading_pct}%, state "
+        f"{l.state}). When they say 'this line', 'this branch', 'the selected one', or "
+        f"'it' with no other id, they mean {l.id}."
+    )
 
 
 # --- tools (all read-only) ---------------------------------------------------
@@ -270,6 +309,15 @@ def node_detail(ctx: RunContext[Deps], node_id: str) -> dict:
         "max_vm_pu": n.max_vm_pu,
         "vm_kv": n.vm_kv,
     }
+
+
+@agent.tool
+def bus_neighbors(ctx: RunContext[Deps], bus_id: str, hops: int = 1) -> dict:
+    """Local topology around a bus, for traversing the network: the branches
+    incident to it and the buses reachable within `hops` (1-3), each with hop
+    distance and type. Each branch carries its live loading. Use this to answer
+    "what does this bus connect to" or to walk the grid hop by hop."""
+    return engine.neighbors(ctx.deps.timestamp, bus_id, hops)
 
 
 @agent.tool
@@ -442,7 +490,9 @@ def _jsonable(value):
         return str(value)
 
 
-async def stream_agent(messages: list[dict], timestamp: str) -> AsyncIterator[str]:
+async def stream_agent(
+    messages: list[dict], timestamp: str, selection: dict | None = None
+) -> AsyncIterator[str]:
     """Run the agent and yield NDJSON event lines for the frontend runtime.
 
     Event shapes (one JSON object per line):
@@ -463,7 +513,10 @@ async def stream_agent(messages: list[dict], timestamp: str) -> AsyncIterator[st
         return
 
     ts = store.nearest_timestamp(timestamp)
-    deps = Deps(timestamp=ts)
+    sel = None
+    if selection and selection.get("id") and selection.get("kind") in ("node", "line"):
+        sel = Selection(kind=selection["kind"], id=str(selection["id"]))
+    deps = Deps(timestamp=ts, selection=sel)
     prompt = ""
     history = messages
     if messages and messages[-1].get("role") == "user":

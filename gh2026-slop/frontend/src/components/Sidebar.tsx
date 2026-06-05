@@ -21,6 +21,7 @@ import { cn } from "@/lib/utils";
 interface Props {
   frame: StateFrame;
   meta: Meta;
+  selected: Selection | null;
   onFocus: (ids: string[]) => void;
   onClearFocus: () => void;
   onSelect: (s: Selection | null) => void;
@@ -82,7 +83,7 @@ const SectionTitle = ({ children }: { children: React.ReactNode }) => (
   <div className="mb-2 mt-1 text-[11px] uppercase tracking-wide text-muted-foreground">{children}</div>
 );
 
-export default function Sidebar({ frame, meta, onFocus, onClearFocus, onSelect }: Props) {
+export default function Sidebar({ frame, meta, selected, onFocus, onClearFocus, onSelect }: Props) {
   const [tab, setTab] = useState<Tab>("alerts");
 
   // client-side alerts (stay in sync with scrubber, no extra fetch)
@@ -133,7 +134,7 @@ export default function Sidebar({ frame, meta, onFocus, onClearFocus, onSelect }
   return (
     // The runtime provider is mounted once, above the tab body, so the agent
     // conversation persists when the operator switches tabs.
-    <AgentRuntimeProvider timestamp={frame.timestamp}>
+    <AgentRuntimeProvider timestamp={frame.timestamp} selection={selected}>
       <aside className="flex w-[390px] flex-col border-l bg-card">
         <Tabs
           value={tab}

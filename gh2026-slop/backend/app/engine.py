@@ -141,7 +141,9 @@ def extract_frame(net, timestamp: str, converged: bool) -> StateFrame:
         is_slack = idx in slack_buses
         lo, hi = float(row["min_vm_pu"]), float(row["max_vm_pu"])
         lon, lat = proj.to_lonlat(
-            float(net.bus_geodata.at[idx, "x"]), float(net.bus_geodata.at[idx, "y"])
+            str(row.get("zone", "")),
+            float(net.bus_geodata.at[idx, "x"]),
+            float(net.bus_geodata.at[idx, "y"]),
         )
         nodes.append(
             Node(
@@ -367,6 +369,61 @@ def element_window(
         "v": v_out,
         "truncated_past": lo < 0,
         "truncated_future": hi > n - 1,
+    }
+
+
+def neighbors(timestamp: str, bus_id: str, hops: int = 1) -> dict:
+    """Local topology around a bus for network traversal.
+
+    Returns the branches incident to `bus_id` and every bus reachable within
+    `hops` (1-3), each tagged with its hop distance and type. Built from the
+    canonical frame, so each branch also carries its live loading.
+    """
+    f = base_frame(timestamp)
+    nodes_by_id = {n.id: n for n in f.nodes}
+    if bus_id not in nodes_by_id:
+        return {"error": f"No bus '{bus_id}'. Check the id with grid_summary / a detail tool."}
+
+    hops = max(1, min(hops, 3))
+    adj: dict[str, list[tuple]] = {}
+    for l in f.lines:
+        adj.setdefault(l.from_node, []).append((l, l.to_node))
+        adj.setdefault(l.to_node, []).append((l, l.from_node))
+
+    dist = {bus_id: 0}
+    edges: dict[str, dict] = {}
+    frontier = [bus_id]
+    depth = 0
+    while frontier and depth < hops:
+        depth += 1
+        nxt: list[str] = []
+        for b in frontier:
+            for l, other in adj.get(b, []):
+                edges[l.id] = {
+                    "branch": l.id,
+                    "kind": l.kind,
+                    "from": l.from_node,
+                    "to": l.to_node,
+                    "loading_pct": l.loading_pct,
+                    "in_service": l.in_service,
+                }
+                if other not in dist:
+                    dist[other] = depth
+                    nxt.append(other)
+        frontier = nxt
+
+    neigh = [
+        {"bus": bid, "hops": h, "type": nodes_by_id[bid].type}
+        for bid, h in sorted(dist.items(), key=lambda kv: (kv[1], kv[0]))
+        if bid != bus_id
+    ]
+    degree = sum(1 for e in edges.values() if e["from"] == bus_id or e["to"] == bus_id)
+    return {
+        "bus": bus_id,
+        "hops": hops,
+        "degree": degree,
+        "neighbors": neigh,
+        "branches": list(edges.values()),
     }
 
 

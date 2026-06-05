@@ -65,13 +65,23 @@ N1_DEV_LIMIT = int(os.getenv("GRID_N1_DEV_LIMIT", "20"))
 # means the slack is doing too much work to mask the deviation -> force notify.
 DEV_SLACK_LOAD_FRACTION = float(os.getenv("GRID_DEV_SLACK_LOAD_FRACTION", "0.25"))
 
-# --- Geographic projection (schematic x/y -> WGS84 over Czechia) ------------
-# The dataset ships schematic coordinates, not geography. We linearly project
-# them into this bounding box so the grid reads as a real map of Czechia.
-CZ_LON_MIN = 12.35
-CZ_LON_MAX = 18.60
-CZ_LAT_MIN = 48.70
-CZ_LAT_MAX = 50.90
+# --- Geographic projection (schematic x/y -> WGS84 over California) ---------
+# Each NREL-118 region (r1/r2/r3) projects into the real-world bounding box
+# of its actual utility service territory (per the NREL paper, Table VIII):
+#   r1 = PG&E Bay Area (PGEB)  — 9-county SF Bay Area
+#   r2 = SMUD                  — Sacramento county
+#   r3 = SDG&E                 — San Diego county
+# Format: region_id -> (lon_min, lon_max, lat_min, lat_max).
+REGION_TARGETS: dict[str, tuple[float, float, float, float]] = {
+    "r1": (-122.45, -121.35, 37.35, 38.15),  # PG&E Bay Area (east of Pacific coast)
+    "r2": (-121.55, -121.10, 38.45, 38.78),  # SMUD (Sacramento county, inland)
+    "r3": (-117.25, -116.35, 32.65, 33.40),  # SDG&E (San Diego county, east of coast)
+}
+
+# Map envelope — full California so the state is visible around the three
+# tightly-localized clusters. Used by /api/meta for the initial map fit.
+LON_MIN, LON_MAX = -124.5, -114.0
+LAT_MIN, LAT_MAX = 32.4, 42.05
 
 # --- AI / chatbot (OpenAI-compatible endpoint, e.g. OpenRouter) -------------
 # Uses the OpenAI SDK pointed at any compatible base URL.
