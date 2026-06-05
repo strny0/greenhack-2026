@@ -12,7 +12,7 @@ dataset means changing paths/parsing here and nothing else.
 from __future__ import annotations
 
 import warnings
-from datetime import datetime
+from datetime import datetime, timedelta
 
 warnings.filterwarnings("ignore")
 
@@ -129,6 +129,29 @@ class DataStore:
             self._timestamps,
             key=lambda t: abs((datetime.fromisoformat(t) - target).total_seconds()),
         )
+
+    def bounds(self) -> tuple[str, str]:
+        """First and last available snapshot timestamps (ISO)."""
+        return self._timestamps[0], self._timestamps[-1]
+
+    def in_range(self, timestamp: str) -> bool:
+        """True if `timestamp` falls within the available snapshot range.
+
+        `nearest_timestamp` silently clamps out-of-range requests to an edge
+        frame; callers that must NOT clamp (e.g. "yesterday" before the dataset
+        start) should gate on this first.
+        """
+        t = datetime.fromisoformat(timestamp)
+        lo = datetime.fromisoformat(self._timestamps[0])
+        hi = datetime.fromisoformat(self._timestamps[-1])
+        return lo <= t <= hi
+
+    def shift(self, timestamp: str, hours: int) -> str | None:
+        """Snapshot `hours` away from `timestamp` (negative = earlier), or None
+        if that lands outside the dataset (no silent clamping)."""
+        base = datetime.fromisoformat(self.nearest_timestamp(timestamp))
+        target = (base + timedelta(hours=hours)).isoformat()
+        return self.nearest_timestamp(target) if self.in_range(target) else None
 
     def read_net(self, timestamp: str):
         """Deserialize a snapshot into a FRESH pandapower net.
