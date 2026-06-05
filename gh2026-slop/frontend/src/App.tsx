@@ -94,13 +94,6 @@ export default function App() {
       />
       <div className="relative flex min-h-0 flex-1">
         <div className="relative flex-1">
-          <MapView
-            frame={frame}
-            meta={meta}
-            highlight={highlight}
-            selected={selected}
-            onSelect={setSelected}
-          />
           {mode === "map" ? (
             <MapView
               frame={frame}
