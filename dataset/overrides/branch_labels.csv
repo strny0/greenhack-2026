@@ -1,0 +1,187 @@
+branch_name,display_name
+branch_001_002_1,Oakland North Sub – Richmond Power
+branch_001_003_1,Oakland North Sub – Hayward Sub
+branch_002_012_1,Richmond Power – Delta Energy Center #2
+branch_003_005_1,Hayward Sub – Pittsburg Sub
+branch_003_012_1,Hayward Sub – Delta Energy Center #2
+branch_004_005_1,Gianera #1 – Pittsburg Sub
+branch_004_011_1,Gianera #1 – San Jose North
+branch_005_006_1,Pittsburg Sub – Gianera #2
+branch_005_011_1,Pittsburg Sub – San Jose North
+branch_006_007_1,Gianera #2 – Fremont East
+branch_007_012_1,Fremont East – Delta Energy Center #2
+branch_008_005_1,Gianera #3 – Pittsburg Sub
+branch_008_009_1,Gianera #3 – Antioch Tap
+branch_008_030_1,Gianera #3 – Bay Point Jct
+branch_009_010_1,Antioch Tap – Delta Energy Center #1
+branch_011_012_1,San Jose North – Delta Energy Center #2
+branch_011_013_1,San Jose North – Palo Alto Sub
+branch_012_014_1,Delta Energy Center #2 – Sunnyvale Tap
+branch_012_016_1,Delta Energy Center #2 – Santa Clara Sub
+branch_012_117_1,Delta Energy Center #2 – Fairfield East
+branch_013_015_1,Palo Alto Sub – Columbia Solar Energy LLC #1
+branch_014_015_1,Sunnyvale Tap – Columbia Solar Energy LLC #1
+branch_015_017_1,Columbia Solar Energy LLC #1 – Milpitas Jct
+branch_015_019_1,Columbia Solar Energy LLC #1 – Columbia Solar Energy LLC #2
+branch_015_033_1,Columbia Solar Energy LLC #1 – Natomas Sub
+branch_016_017_1,Santa Clara Sub – Milpitas Jct
+branch_017_018_1,Milpitas Jct – Los Esteros Critical Energy Facility #1
+branch_017_031_1,"Milpitas Jct – Shiloh Wind Project 2, LLC (Shiloh II & III)"
+branch_017_113_1,Milpitas Jct – Metcalf Energy Center
+branch_018_019_1,Los Esteros Critical Energy Facility #1 – Columbia Solar Energy LLC #2
+branch_019_020_1,Columbia Solar Energy LLC #2 – San Leandro
+branch_019_034_1,Columbia Solar Energy LLC #2 – Wise
+branch_020_021_1,San Leandro – Emeryville Sub
+branch_021_022_1,Emeryville Sub – Alameda Point
+branch_022_023_1,Alameda Point – Walnut Creek Sub
+branch_023_024_1,Walnut Creek Sub – Altamont Winds LLC
+branch_023_025_1,Walnut Creek Sub – Marsh Landing Generating Station
+branch_023_032_1,Walnut Creek Sub – Columbia Solar Energy LLC #3
+branch_024_070_1,Altamont Winds LLC – Crockett Cogeneration Project #1
+branch_024_072_1,Altamont Winds LLC – Crockett Cogeneration Project #2
+branch_025_027_1,"Marsh Landing Generating Station – Shiloh III Wind Project, LLC"
+branch_026_025_1,Delta Energy Center #3 – Marsh Landing Generating Station
+branch_026_030_1,Delta Energy Center #3 – Bay Point Jct
+branch_027_028_1,"Shiloh III Wind Project, LLC – Concord Tap"
+branch_027_032_1,"Shiloh III Wind Project, LLC – Columbia Solar Energy LLC #3"
+branch_027_115_1,"Shiloh III Wind Project, LLC – Benicia Sub"
+branch_028_029_1,Concord Tap – Pleasanton Sub
+branch_029_031_1,"Pleasanton Sub – Shiloh Wind Project 2, LLC (Shiloh II & III)"
+branch_030_017_1,Bay Point Jct – Milpitas Jct
+branch_030_038_1,Bay Point Jct – Colfax Tap
+branch_031_032_1,"Shiloh Wind Project 2, LLC (Shiloh II & III) – Columbia Solar Energy LLC #3"
+branch_032_113_1,Columbia Solar Energy LLC #3 – Metcalf Energy Center
+branch_032_114_1,Columbia Solar Energy LLC #3 – Danville Tap
+branch_033_037_1,Natomas Sub – Gold Hill Sub
+branch_034_036_1,Wise – McClellan #1
+branch_034_037_1,Wise – Gold Hill Sub
+branch_034_043_1,Wise – Folsom Sub
+branch_035_036_1,Elk Grove Tap – McClellan #1
+branch_035_037_1,Elk Grove Tap – Gold Hill Sub
+branch_037_039_1,Gold Hill Sub – Citrus Heights
+branch_037_040_1,Gold Hill Sub – Red Bluff
+branch_038_037_1,Colfax Tap – Gold Hill Sub
+branch_038_065_1,Colfax Tap – Colusa Generating Station
+branch_039_040_1,Citrus Heights – Red Bluff
+branch_040_041_1,Red Bluff – Roseville North
+branch_040_042_1,Red Bluff – Pit #4
+branch_041_042_1,Roseville North – Pit #4
+branch_042_049_1,Pit #4 – Cosumnes Power Plant #2
+branch_042_049_2,Pit #4 – Cosumnes Power Plant #2
+branch_043_044_1,Folsom Sub – Rancho Cordova
+branch_044_045_1,Rancho Cordova – Davis Junction
+branch_045_046_1,Davis Junction – Cosumnes Power Plant #1
+branch_045_049_1,Davis Junction – Cosumnes Power Plant #2
+branch_046_047_1,Cosumnes Power Plant #1 – Woodland Sub
+branch_046_048_1,Cosumnes Power Plant #1 – Auburn North
+branch_047_049_1,Woodland Sub – Cosumnes Power Plant #2
+branch_047_069_1,Woodland Sub – Nevada City Tap
+branch_048_049_1,Auburn North – Cosumnes Power Plant #2
+branch_049_050_1,Cosumnes Power Plant #2 – Lincoln Tap
+branch_049_051_1,Cosumnes Power Plant #2 – Rocklin Sub
+branch_049_054_1,Cosumnes Power Plant #2 – Rancho Seco Solar II
+branch_049_054_2,Cosumnes Power Plant #2 – Rancho Seco Solar II
+branch_049_066_1,Cosumnes Power Plant #2 – Cosumnes Power Plant #3
+branch_049_066_2,Cosumnes Power Plant #2 – Cosumnes Power Plant #3
+branch_049_069_1,Cosumnes Power Plant #2 – Nevada City Tap
+branch_050_057_1,Lincoln Tap – Chico East
+branch_051_052_1,Rocklin Sub – Yuba City
+branch_051_058_1,Rocklin Sub – Red Bluff Jct
+branch_052_053_1,Yuba City – Marysville Tap
+branch_053_054_1,Marysville Tap – Rancho Seco Solar II
+branch_054_055_1,Rancho Seco Solar II – McClellan #2
+branch_054_056_1,Rancho Seco Solar II – Jaybird
+branch_054_059_1,Rancho Seco Solar II – Shasta #1
+branch_055_056_1,McClellan #2 – Jaybird
+branch_055_059_1,McClellan #2 – Shasta #1
+branch_056_057_1,Jaybird – Chico East
+branch_056_058_1,Jaybird – Red Bluff Jct
+branch_056_059_1,Jaybird – Shasta #1
+branch_056_059_2,Jaybird – Shasta #1
+branch_059_060_1,Shasta #1 – Redding South
+branch_059_061_1,Shasta #1 – Shasta #2
+branch_060_061_1,Redding South – Shasta #2
+branch_060_062_1,Redding South – Shasta #3
+branch_061_062_1,Shasta #2 – Shasta #3
+branch_062_066_1,Shasta #3 – Cosumnes Power Plant #3
+branch_062_067_1,Shasta #3 – Anderson Sub
+branch_063_059_1,Truckee Jct – Shasta #1
+branch_063_064_1,Truckee Jct – Quincy Sub
+branch_064_061_1,Quincy Sub – Shasta #2
+branch_064_065_1,Quincy Sub – Colusa Generating Station
+branch_065_066_1,Colusa Generating Station – Cosumnes Power Plant #3
+branch_065_068_1,Colusa Generating Station – Grass Valley
+branch_066_067_1,Cosumnes Power Plant #3 – Anderson Sub
+branch_068_069_1,Grass Valley – Nevada City Tap
+branch_068_081_1,Grass Valley – Carmichael Tap
+branch_068_116_1,Grass Valley – Shasta #8
+branch_069_070_1,Nevada City Tap – Crockett Cogeneration Project #1
+branch_069_075_1,Nevada City Tap – San Ramon Sub
+branch_069_077_1,Nevada City Tap – Shasta #5
+branch_070_071_1,Crockett Cogeneration Project #1 – Brentwood Sub
+branch_070_074_1,Crockett Cogeneration Project #1 – Los Esteros Critical Energy Facility #2
+branch_070_075_1,Crockett Cogeneration Project #1 – San Ramon Sub
+branch_071_072_1,Brentwood Sub – Crockett Cogeneration Project #2
+branch_071_073_1,Brentwood Sub – Livermore East
+branch_074_075_1,Los Esteros Critical Energy Facility #2 – San Ramon Sub
+branch_075_077_1,San Ramon Sub – Shasta #5
+branch_075_118_1,San Ramon Sub – Winters Sub
+branch_076_077_1,Shasta #4 – Shasta #5
+branch_076_118_1,Shasta #4 – Winters Sub
+branch_077_078_1,Shasta #5 – Loomis Sub
+branch_077_080_1,Shasta #5 – Shasta #6
+branch_077_080_2,Shasta #5 – Shasta #6
+branch_077_082_1,Shasta #5 – Ocotillo Express LLC
+branch_078_079_1,Loomis Sub – Antelope Sub
+branch_079_080_1,Antelope Sub – Shasta #6
+branch_080_096_1,Shasta #6 – Oceanside Sub
+branch_080_097_1,Shasta #6 – Fair Oaks Sub
+branch_080_098_1,Shasta #6 – Orangevale Jct
+branch_080_099_1,Shasta #6 – Shasta #7
+branch_081_080_1,Carmichael Tap – Shasta #6
+branch_082_083_1,Ocotillo Express LLC – Chula Vista Sub
+branch_082_096_1,Ocotillo Express LLC – Oceanside Sub
+branch_083_084_1,Chula Vista Sub – El Cajon Tap
+branch_083_085_1,Chula Vista Sub – Goal Line LP #1
+branch_084_085_1,El Cajon Tap – Goal Line LP #1
+branch_085_086_1,Goal Line LP #1 – Santee Junction
+branch_085_088_1,Goal Line LP #1 – La Mesa Sub
+branch_085_089_1,Goal Line LP #1 – Sentinel Energy Center #2
+branch_086_087_1,Santee Junction – Sentinel Energy Center #1
+branch_088_089_1,La Mesa Sub – Sentinel Energy Center #2
+branch_089_090_1,Sentinel Energy Center #2 – Pio Pico Energy Center #1
+branch_089_090_2,Sentinel Energy Center #2 – Pio Pico Energy Center #1
+branch_089_092_1,Sentinel Energy Center #2 – Riverside Energy Resource Center
+branch_089_092_2,Sentinel Energy Center #2 – Riverside Energy Resource Center
+branch_090_091_1,Pio Pico Energy Center #1 – Goal Line LP #2
+branch_091_092_1,Goal Line LP #2 – Riverside Energy Resource Center
+branch_092_093_1,Riverside Energy Resource Center – Spring Valley
+branch_092_094_1,Riverside Energy Resource Center – National City Tap
+branch_092_100_1,Riverside Energy Resource Center – Goal Line LP #3
+branch_092_102_1,Riverside Energy Resource Center – San Marcos Sub
+branch_093_094_1,Spring Valley – National City Tap
+branch_094_095_1,National City Tap – Escondido North
+branch_094_096_1,National City Tap – Oceanside Sub
+branch_094_100_1,National City Tap – Goal Line LP #3
+branch_095_096_1,Escondido North – Oceanside Sub
+branch_096_097_1,Oceanside Sub – Fair Oaks Sub
+branch_098_100_1,Orangevale Jct – Goal Line LP #3
+branch_099_100_1,Shasta #7 – Goal Line LP #3
+branch_100_101_1,Goal Line LP #3 – Vista Tap
+branch_100_103_1,Goal Line LP #3 – Pio Pico Energy Center #2
+branch_100_104_1,Goal Line LP #3 – Quartzite Solar 8 (CAISO)
+branch_100_106_1,Goal Line LP #3 – Carlsbad East
+branch_101_102_1,Vista Tap – San Marcos Sub
+branch_103_104_1,Pio Pico Energy Center #2 – Quartzite Solar 8 (CAISO)
+branch_103_105_1,Pio Pico Energy Center #2 – Arica Solar
+branch_103_110_1,Pio Pico Energy Center #2 – Victory Pass
+branch_104_105_1,Quartzite Solar 8 (CAISO) – Arica Solar
+branch_105_106_1,Arica Solar – Carlsbad East
+branch_105_107_1,Arica Solar – Sentinel Energy Center #3
+branch_105_108_1,Arica Solar – Encinitas Jct
+branch_106_107_1,Carlsbad East – Sentinel Energy Center #3
+branch_108_109_1,Encinitas Jct – Ramona Sub
+branch_109_110_1,Ramona Sub – Victory Pass
+branch_110_111_1,Victory Pass – Goal Line LP #4
+branch_110_112_1,Victory Pass – Centinela Solar Energy
+branch_114_115_1,Danville Tap – Benicia Sub
