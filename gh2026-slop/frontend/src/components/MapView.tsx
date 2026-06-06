@@ -46,13 +46,60 @@ const STYLE: maplibregl.StyleSpecification = {
   ],
 };
 
+// Sample a quadratic-bezier arc between two points. The bow direction is
+// canonicalized so the curve always bows northward (positive lat) regardless of
+// chord ordering — this prevents the chaotic look of arcs flipping based on
+// from/to direction in the dataset.
+//
+// `circuit` lets parallel circuits between the same pair fan out instead of
+// overlapping: circuit N gets bow * (1 + (N-1) * 0.18).
+function arcPath(
+  a: [number, number],
+  b: [number, number],
+  circuit = 1,
+  samples = 20,
+): [number, number][] {
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const len = Math.hypot(dx, dy);
+  if (len === 0) return [a, b];
+  // Perpendicular unit vector (rotate 90° CCW from chord direction).
+  let px = -dy / len;
+  let py = dx / len;
+  // Force the bow to point northward (positive lat) so all arcs curve the
+  // same way regardless of how the chord is oriented.
+  if (py < 0) { px = -px; py = -py; }
+  // Bow magnitude scales with chord length but tapers on very long spans so the
+  // SF→SD line doesn't balloon into the Pacific. Stagger parallel circuits.
+  const baseBow = Math.min(len * 0.22, 1.6) * (1 + (circuit - 1) * 0.18);
+  const cx = (a[0] + b[0]) / 2 + px * baseBow;
+  const cy = (a[1] + b[1]) / 2 + py * baseBow;
+  const pts: [number, number][] = [];
+  for (let i = 0; i <= samples; i++) {
+    const t = i / samples;
+    const u = 1 - t;
+    pts.push([u * u * a[0] + 2 * u * t * cx + t * t * b[0], u * u * a[1] + 2 * u * t * cy + t * t * b[1]]);
+  }
+  return pts;
+}
+
+// Pull the circuit number off the end of an id like `branch_001_050_2` → 2.
+function circuitNum(id: string): number {
+  const m = id.match(/_(\d+)$/);
+  return m ? parseInt(m[1], 10) : 1;
+}
+
 function buildGeo(
   frame: StateFrame,
   highlight: Set<string>,
   deltas: { lines: Record<string, LineDelta>; nodes: Record<string, NodeDelta> } | null,
 ) {
   const coord: Record<string, [number, number]> = {};
-  for (const n of frame.nodes) coord[n.id] = [n.lon, n.lat];
+  const zoneOf: Record<string, string> = {};
+  for (const n of frame.nodes) {
+    coord[n.id] = [n.lon, n.lat];
+    zoneOf[n.id] = n.zone || "";
+  }
 
   const lines = {
     type: "FeatureCollection" as const,
@@ -62,15 +109,20 @@ function buildGeo(
         const b = coord[l.to_node];
         if (!a || !b) return null;
         const d = deltas?.lines[l.id];
+        const za = zoneOf[l.from_node];
+        const zb = zoneOf[l.to_node];
+        const inter = za && zb && za !== zb ? 1 : 0;
+        const coords = inter ? arcPath(a, b, circuitNum(l.id)) : [a, b];
         return {
           type: "Feature" as const,
-          geometry: { type: "LineString" as const, coordinates: [a, b] },
+          geometry: { type: "LineString" as const, coordinates: coords },
           properties: {
             id: l.id,
             name: labelOf(l),
             kind: l.kind,
             loading: l.loading_pct ?? -1,
             inservice: l.in_service ? 1 : 0,
+            inter,
             hl: highlight.has(l.id) ? 1 : 0,
             dload: d?.deltaLoading ?? 0,
             mover: d?.mover ? 1 : 0,
@@ -156,20 +208,30 @@ export default function MapView({ frame, meta, highlight, selected, onSelect, zo
       map.addSource("lines", { type: "geojson", data: geo.lines as any });
       map.addSource("nodes", { type: "geojson", data: geo.nodes as any });
 
-      // dark casing underneath for contrast against the basemap
+      // dark casing underneath for contrast against the basemap. Inter-region
+      // tie-lines render thinner so they don't dominate.
       map.addLayer({
         id: "lines-casing",
         type: "line",
         source: "lines",
+        layout: { "line-cap": "round", "line-join": "round" },
         paint: {
           "line-color": CASING_COLOR,
           "line-width": [
             "case",
-            ["==", ["get", "kind"], "trafo"],
-            2.4,
-            ["interpolate", ["linear"], ["get", "loading"], 0, 2.4, 100, 5],
+            ["==", ["get", "inter"], 1],
+            ["interpolate", ["linear"], ["get", "loading"], 0, 1.4, 100, 2.8],
+            ["case",
+              ["==", ["get", "kind"], "trafo"],
+              2.4,
+              ["interpolate", ["linear"], ["get", "loading"], 0, 2.4, 100, 5],
+            ],
           ],
-          "line-opacity": 0.7,
+          "line-opacity": [
+            "case",
+            ["==", ["get", "inter"], 1], 0.45,
+            0.7,
+          ],
         },
       });
       map.addLayer({
@@ -183,16 +245,25 @@ export default function MapView({ frame, meta, highlight, selected, onSelect, zo
         id: "lines",
         type: "line",
         source: "lines",
-        layout: { "line-cap": "round" },
+        layout: { "line-cap": "round", "line-join": "round" },
         paint: {
           "line-color": loadingColor,
           "line-width": [
             "case",
-            ["==", ["get", "kind"], "trafo"],
-            1.4,
-            ["interpolate", ["linear"], ["get", "loading"], 0, 1.4, 100, 3.4],
+            ["==", ["get", "inter"], 1],
+            ["interpolate", ["linear"], ["get", "loading"], 0, 0.9, 100, 2.0],
+            ["case",
+              ["==", ["get", "kind"], "trafo"],
+              1.4,
+              ["interpolate", ["linear"], ["get", "loading"], 0, 1.4, 100, 3.4],
+            ],
           ],
-          "line-opacity": ["case", ["==", ["get", "inservice"], 0], 0.3, 1],
+          "line-opacity": [
+            "case",
+            ["==", ["get", "inservice"], 0], 0.3,
+            ["==", ["get", "inter"], 1], 0.6,
+            1,
+          ],
         },
       });
 
