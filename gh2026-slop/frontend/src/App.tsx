@@ -7,11 +7,22 @@ import TopBar from "./components/TopBar";
 import Legend from "./components/Legend";
 import DetailPanel from "./components/DetailPanel";
 import Sidebar from "./components/Sidebar";
+import {
+  clampWindowStart,
+  datasetDayBounds,
+  dayStartIndex,
+  keyToDate,
+  lastDayStart,
+} from "./lib/datetime";
+
+const DAY_FRAMES = 24; // one calendar day per loaded window
 
 export default function App() {
   const [meta, setMeta] = useState<Meta | null>(null);
   const [frames, setFrames] = useState<StateFrame[]>([]);
   const [idx, setIdx] = useState(0);
+  const [windowStart, setWindowStart] = useState<number | null>(null);
+  const [windowLoading, setWindowLoading] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [selected, setSelected] = useState<Selection | null>(null);
   const [highlight, setHighlight] = useState<Set<string>>(new Set());
@@ -22,29 +33,104 @@ export default function App() {
   const [mode, setMode] = useState<"map" | "sld">("sld");
   const [progress, setProgress] = useState(0);
   const timer = useRef<number | null>(null);
+  // The first window load shows the full-screen progress bar and jumps to the
+  // evening peak; later loads (a date change) keep the old frames on screen.
+  const initialLoad = useRef(true);
+  // Loaded day-windows, keyed by start index. Stepping to a day we've already
+  // seen (or prefetched) is instant. Bounded so we don't hoard a whole year.
+  const windowCache = useRef<Map<number, StateFrame[]>>(new Map());
+  const inFlight = useRef<Set<number>>(new Set());
 
-  // load meta + initial window
+  // load meta, then point at the default day (its window load is the effect below)
   useEffect(() => {
     (async () => {
       try {
         const m = await api.meta();
         setMeta(m);
-        // meta is in; reserve a sliver of the bar for it, then stream the window
         setProgress(0.04);
-        const w = await api.windowProgress(
-          m.default_window.start,
-          m.default_window.count,
-          (f) => setProgress(0.04 + f * 0.96),
-        );
-        setFrames(w);
-        // start at an interesting hour (evening peak ~18:00) if present
-        const peak = w.findIndex((f) => f.timestamp.endsWith("T18:00:00"));
-        setIdx(peak >= 0 ? peak : 0);
+        setWindowStart(clampWindowStart(m.default_window.start, m.count));
       } catch (e: any) {
         setError(String(e));
       }
     })();
   }, []);
+
+  // load the 24h window whenever the selected day changes
+  useEffect(() => {
+    if (!meta || windowStart == null) return;
+    let cancelled = false;
+    const isInitial = initialLoad.current;
+    const total = meta.count;
+    const CACHE_CAP = 24; // ~24 days of frames kept in memory
+
+    const cacheSet = (start: number, w: StateFrame[]) => {
+      const c = windowCache.current;
+      c.delete(start);
+      c.set(start, w); // (re)insert as most-recent
+      while (c.size > CACHE_CAP) c.delete(c.keys().next().value as number);
+    };
+
+    // Warm the previous/next day in the background so left/right stepping is
+    // instant (also warms the backend's per-frame LRU).
+    const prefetchNeighbors = (start: number) => {
+      for (const s of [start - DAY_FRAMES, start + DAY_FRAMES]) {
+        if (s < 0 || s > lastDayStart(total)) continue;
+        if (windowCache.current.has(s) || inFlight.current.has(s)) continue;
+        inFlight.current.add(s);
+        api
+          .window(s, DAY_FRAMES)
+          .then((w) => cacheSet(s, w))
+          .catch(() => {})
+          .finally(() => inFlight.current.delete(s));
+      }
+    };
+
+    const apply = (w: StateFrame[]) => {
+      setFrames(w);
+      if (isInitial) {
+        // start at an interesting hour (evening peak ~18:00) if present
+        const peak = w.findIndex((f) => f.timestamp.endsWith("T18:00:00"));
+        setIdx(peak >= 0 ? peak : 0);
+        initialLoad.current = false;
+      } else {
+        // aligned 24h days -> keeping idx keeps the same hour-of-day
+        setIdx((i) => Math.min(i, Math.max(0, w.length - 1)));
+      }
+      prefetchNeighbors(windowStart);
+    };
+
+    if (!isInitial) setPlaying(false);
+
+    const cached = windowCache.current.get(windowStart);
+    if (cached) {
+      setWindowLoading(false);
+      apply(cached);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setWindowLoading(true);
+    (async () => {
+      try {
+        const w = await api.windowProgress(
+          windowStart,
+          DAY_FRAMES,
+          isInitial ? (f) => setProgress(0.04 + f * 0.96) : undefined,
+        );
+        if (cancelled) return;
+        cacheSet(windowStart, w);
+        apply(w);
+      } catch (e: any) {
+        if (!cancelled) setError(String(e));
+      } finally {
+        if (!cancelled) setWindowLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [meta, windowStart]);
 
   // playback loop
   useEffect(() => {
@@ -60,6 +146,28 @@ export default function App() {
 
   const frame = frames[idx] ?? null;
   const windowStartTs = frames[0]?.timestamp ?? "";
+
+  const total = meta?.count ?? 0;
+  const selectDate = (date: Date) => {
+    if (!meta) return;
+    setWindowStart(clampWindowStart(dayStartIndex(meta.timestamps, date), total));
+  };
+  const stepDay = (delta: -1 | 1) =>
+    setWindowStart((s) => (s == null ? s : clampWindowStart(s + delta * DAY_FRAMES, total)));
+
+  const selectedDate = useMemo(
+    () =>
+      meta && windowStart != null
+        ? keyToDate(meta.timestamps[windowStart].slice(0, 10))
+        : new Date(),
+    [meta, windowStart],
+  );
+  const dayBounds = useMemo(
+    () => (meta ? datasetDayBounds(meta.timestamps) : { first: new Date(), last: new Date() }),
+    [meta],
+  );
+  const canPrev = windowStart != null && windowStart > 0;
+  const canNext = windowStart != null && windowStart < lastDayStart(total);
 
   const focus = (ids: string[]) => setHighlight(new Set(ids));
   const clearFocus = () => setHighlight(new Set());
@@ -120,6 +228,13 @@ export default function App() {
         togglePlay={() => setPlaying((p) => !p)}
         mode={mode}
         onModeChange={setMode}
+        selectedDate={selectedDate}
+        dayBounds={dayBounds}
+        windowLoading={windowLoading}
+        canPrev={canPrev && !windowLoading}
+        canNext={canNext && !windowLoading}
+        onSelectDate={selectDate}
+        onStepDay={stepDay}
       />
       {/* Mobile: stack the map above a collapsible chat/sidebar sheet.
           Desktop (md+): map left, resizable sidebar on the right. */}

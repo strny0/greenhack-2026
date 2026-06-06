@@ -3,6 +3,7 @@ import type { StateFrame } from "../types";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { cn } from "@/lib/utils";
+import DateTimePicker from "./DateTimePicker";
 
 interface Props {
   frame: StateFrame;
@@ -13,6 +14,13 @@ interface Props {
   togglePlay: () => void;
   mode: "map" | "sld";
   onModeChange: (m: "map" | "sld") => void;
+  selectedDate: Date;
+  dayBounds: { first: Date; last: Date };
+  windowLoading: boolean;
+  canPrev: boolean;
+  canNext: boolean;
+  onSelectDate: (date: Date) => void;
+  onStepDay: (delta: -1 | 1) => void;
 }
 
 const fmt = (ts: string) =>
@@ -60,6 +68,13 @@ export default function TopBar({
   togglePlay,
   mode,
   onModeChange,
+  selectedDate,
+  dayBounds,
+  windowLoading,
+  canPrev,
+  canNext,
+  onSelectDate,
+  onStepDay,
 }: Props) {
   const s = frame.summary;
   return (
@@ -135,7 +150,7 @@ export default function TopBar({
         />
       </div>
 
-      <div className="flex w-full items-center gap-3 md:w-auto md:min-w-[360px] md:flex-1 lg:min-w-[420px] lg:flex-none">
+      <div className="flex w-full flex-wrap items-center gap-3 md:w-auto md:flex-nowrap md:min-w-[360px] md:flex-1 lg:min-w-[560px] lg:flex-none">
         <Button
           variant="outline"
           size="icon"
@@ -144,8 +159,17 @@ export default function TopBar({
         >
           {playing ? <Pause className="size-4" /> : <Play className="size-4" />}
         </Button>
+        <DateTimePicker
+          date={selectedDate}
+          bounds={dayBounds}
+          loading={windowLoading}
+          canPrev={canPrev}
+          canNext={canNext}
+          onSelect={onSelectDate}
+          onStep={onStepDay}
+        />
         <Slider
-          className="flex-1"
+          className="min-w-[120px] flex-1"
           min={0}
           max={Math.max(0, frames.length - 1)}
           step={1}
