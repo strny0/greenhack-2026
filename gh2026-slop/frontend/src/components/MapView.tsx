@@ -112,7 +112,10 @@ function buildGeo(
         const za = zoneOf[l.from_node];
         const zb = zoneOf[l.to_node];
         const inter = za && zb && za !== zb ? 1 : 0;
-        const coords = inter ? arcPath(a, b, circuitNum(l.id)) : [a, b];
+        let coords = inter ? arcPath(a, b, circuitNum(l.id)) : [a, b];
+        // Reverse geometry when flow is from b→a so the animated marching
+        // dashes on the overlay layer naturally show the real flow direction.
+        if ((l.p_from_mw ?? 0) < 0) coords = coords.slice().reverse();
         return {
           type: "Feature" as const,
           geometry: { type: "LineString" as const, coordinates: coords },
@@ -121,6 +124,7 @@ function buildGeo(
             name: labelOf(l),
             kind: l.kind,
             loading: l.loading_pct ?? -1,
+            cap: l.max_i_ka || 0,
             inservice: l.in_service ? 1 : 0,
             inter,
             hl: highlight.has(l.id) ? 1 : 0,
@@ -208,8 +212,10 @@ export default function MapView({ frame, meta, highlight, selected, onSelect, zo
       map.addSource("lines", { type: "geojson", data: geo.lines as any });
       map.addSource("nodes", { type: "geojson", data: geo.nodes as any });
 
-      // dark casing underneath for contrast against the basemap. Inter-region
-      // tie-lines render thinner so they don't dominate.
+      // Stroke width encodes thermal capacity (max_i_ka), color encodes
+      // current loading. A thick green line is a fat idle highway; a thin red
+      // one is an overloaded feeder — capacity stays visible regardless of load.
+      // max_i_ka distribution: median ~2.5 kA, max ~14.6 kA.
       map.addLayer({
         id: "lines-casing",
         type: "line",
@@ -220,11 +226,11 @@ export default function MapView({ frame, meta, highlight, selected, onSelect, zo
           "line-width": [
             "case",
             ["==", ["get", "inter"], 1],
-            ["interpolate", ["linear"], ["get", "loading"], 0, 1.4, 100, 2.8],
+            ["interpolate", ["linear"], ["get", "cap"], 1, 1.8, 3, 2.6, 8, 4.0, 15, 5.6],
             ["case",
               ["==", ["get", "kind"], "trafo"],
               2.4,
-              ["interpolate", ["linear"], ["get", "loading"], 0, 2.4, 100, 5],
+              ["interpolate", ["linear"], ["get", "cap"], 1, 1.8, 3, 2.8, 8, 4.4, 15, 6.2],
             ],
           ],
           "line-opacity": [
@@ -251,19 +257,40 @@ export default function MapView({ frame, meta, highlight, selected, onSelect, zo
           "line-width": [
             "case",
             ["==", ["get", "inter"], 1],
-            ["interpolate", ["linear"], ["get", "loading"], 0, 0.9, 100, 2.0],
+            ["interpolate", ["linear"], ["get", "cap"], 1, 1.0, 3, 1.8, 8, 2.8, 15, 4.0],
             ["case",
               ["==", ["get", "kind"], "trafo"],
               1.4,
-              ["interpolate", ["linear"], ["get", "loading"], 0, 1.4, 100, 3.4],
+              ["interpolate", ["linear"], ["get", "cap"], 1, 1.2, 3, 2.0, 8, 3.2, 15, 4.6],
             ],
           ],
           "line-opacity": [
             "case",
             ["==", ["get", "inservice"], 0], 0.3,
-            ["==", ["get", "inter"], 1], 0.6,
+            ["==", ["get", "inter"], 1], 0.7,
             1,
           ],
+        },
+      });
+
+      // Marching-ants flow overlay on every in-service line. Dasharray is
+      // shifted on a timer (see useEffect below) to animate. Geometry direction
+      // is reversed upstream when p_from_mw < 0 (buildGeo) so the dashes always
+      // march in the direction power is actually flowing.
+      map.addLayer({
+        id: "lines-flow",
+        type: "line",
+        source: "lines",
+        filter: ["==", ["get", "inservice"], 1],
+        layout: { "line-cap": "butt", "line-join": "round" },
+        paint: {
+          "line-color": "#ffffff",
+          "line-width": [
+            "interpolate", ["linear"], ["get", "cap"],
+            1, 0.9, 3, 1.6, 8, 2.5, 15, 3.6,
+          ],
+          "line-opacity": 0.7,
+          "line-dasharray": [0, 4, 3],
         },
       });
 
@@ -496,6 +523,29 @@ export default function MapView({ frame, meta, highlight, selected, onSelect, zo
     map.setFilter("node-selected", ["==", ["get", "id"], selected?.kind === "node" ? selected.id : "__none__"]);
     map.setFilter("line-selected", ["==", ["get", "id"], selected?.kind === "line" ? selected.id : "__none__"]);
   }, [selected]);
+
+  // Marching-ants dash animation on the inter-region flow overlay. Cycles a
+  // dasharray pattern through 14 frames giving a continuous flow effect; arc
+  // geometry direction matches actual power flow (see buildGeo).
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    // Pattern alternates dash-then-gap; shifting through these 14 phases makes
+    // a 7-unit period appear to translate one unit per frame.
+    const DASH_SEQ: number[][] = [
+      [0, 4, 3],     [0.5, 4, 2.5], [1, 4, 2],     [1.5, 4, 1.5],
+      [2, 4, 1],     [2.5, 4, 0.5], [3, 4, 0],
+      [0, 0.5, 3, 3.5], [0, 1, 3, 3], [0, 1.5, 3, 2.5],
+      [0, 2, 3, 2],  [0, 2.5, 3, 1.5], [0, 3, 3, 1], [0, 3.5, 3, 0.5],
+    ];
+    let step = 0;
+    const iv = window.setInterval(() => {
+      if (!map.getLayer("lines-flow")) return; // not loaded yet
+      step = (step + 1) % DASH_SEQ.length;
+      map.setPaintProperty("lines-flow", "line-dasharray", DASH_SEQ[step]);
+    }, 70);
+    return () => window.clearInterval(iv);
+  }, []);
 
   // fly the camera to a requested element (chat chip double-click / reticle)
   useEffect(() => {
