@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { cn } from "@/lib/utils";
 import DateTimePicker from "./DateTimePicker";
+import BookmarksMenu from "./BookmarksMenu";
 
 interface Props {
   frame: StateFrame;
@@ -20,6 +21,7 @@ interface Props {
   canPrev: boolean;
   canNext: boolean;
   onSelectDate: (date: Date) => void;
+  onSelectBookmark: (date: Date) => void;
   onStepDay: (delta: -1 | 1) => void;
 }
 
@@ -74,6 +76,7 @@ export default function TopBar({
   canPrev,
   canNext,
   onSelectDate,
+  onSelectBookmark,
   onStepDay,
 }: Props) {
   const s = frame.summary;
@@ -159,6 +162,7 @@ export default function TopBar({
         >
           {playing ? <Pause className="size-4" /> : <Play className="size-4" />}
         </Button>
+        <BookmarksMenu currentDate={selectedDate} onSelect={onSelectBookmark} />
         <DateTimePicker
           date={selectedDate}
           bounds={dayBounds}

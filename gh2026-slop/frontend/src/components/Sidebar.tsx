@@ -48,6 +48,12 @@ function useMediaQuery(query: string): boolean {
 interface Props {
   frame: StateFrame;
   meta: Meta;
+  /**
+   * The currently-viewed snapshot timestamp, derived from `meta` (the selected
+   * day + hour) so it updates the *instant* the day changes — before the heavy
+   * window data finishes loading. Drives the agent's grid-state context.
+   */
+  agentTimestamp: string;
   selected: Selection | null;
   onFocus: (ids: string[]) => void;
   onClearFocus: () => void;
@@ -119,7 +125,7 @@ const MAX_WIDTH = 720;
 const DEFAULT_WIDTH = 390;
 const WIDTH_KEY = "sidebar-width";
 
-export default function Sidebar({ frame, meta, selected, onFocus, onClearFocus, onSelect, onZoom }: Props) {
+export default function Sidebar({ frame, meta, agentTimestamp, selected, onFocus, onClearFocus, onSelect, onZoom }: Props) {
   // On phones the panel becomes a collapsible bottom sheet under the map; on
   // desktop it's the resizable right rail. `mobileOpen` drives the sheet height.
   const isDesktop = useMediaQuery("(min-width: 768px)");
@@ -221,7 +227,7 @@ export default function Sidebar({ frame, meta, selected, onFocus, onClearFocus, 
   return (
     // The runtime provider is mounted once, above the tab body, so the agent
     // conversation persists when the operator switches tabs.
-    <AgentRuntimeProvider timestamp={frame.timestamp} selection={selected}>
+    <AgentRuntimeProvider timestamp={agentTimestamp || frame.timestamp} selection={selected}>
       <aside
         className={cn(
           "relative flex flex-col bg-card",

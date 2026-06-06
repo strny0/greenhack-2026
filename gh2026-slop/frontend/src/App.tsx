@@ -152,8 +152,24 @@ export default function App() {
     if (!meta) return;
     setWindowStart(clampWindowStart(dayStartIndex(meta.timestamps, date), total));
   };
+  // Bookmarks point at a *moment*, not just a day: jump to the day and land on
+  // noon (hour 12 of the aligned 24h window) regardless of the hour we were on.
+  const selectBookmark = (date: Date) => {
+    if (!meta) return;
+    setWindowStart(clampWindowStart(dayStartIndex(meta.timestamps, date), total));
+    setIdx(12);
+  };
   const stepDay = (delta: -1 | 1) =>
     setWindowStart((s) => (s == null ? s : clampWindowStart(s + delta * DAY_FRAMES, total)));
+
+  // The viewed snapshot timestamp, read straight from `meta` (selected day +
+  // hour-of-day). Unlike `frame.timestamp` this updates the instant the day
+  // changes — before the window's grid data finishes loading — so the agent's
+  // context never lags behind a jump to an uncached day (e.g. via a bookmark).
+  const currentTs =
+    meta && windowStart != null
+      ? meta.timestamps[Math.min(windowStart + idx, total - 1)] ?? ""
+      : "";
 
   const selectedDate = useMemo(
     () =>
@@ -234,6 +250,7 @@ export default function App() {
         canPrev={canPrev && !windowLoading}
         canNext={canNext && !windowLoading}
         onSelectDate={selectDate}
+        onSelectBookmark={selectBookmark}
         onStepDay={stepDay}
       />
       {/* Mobile: stack the map above a collapsible chat/sidebar sheet.
@@ -273,6 +290,7 @@ export default function App() {
         <Sidebar
           frame={frame}
           meta={meta}
+          agentTimestamp={currentTs}
           selected={selected}
           onFocus={focus}
           onClearFocus={clearFocus}
