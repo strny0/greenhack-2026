@@ -1,4 +1,4 @@
-# Grid Pulse — real-time decision support for transmission grids
+# Grid Pulse: real-time decision support for transmission grids
 
 **ČEPS · GreenHack 2026 — Grid Pulse Challenge.**
 
