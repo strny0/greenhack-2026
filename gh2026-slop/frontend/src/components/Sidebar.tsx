@@ -135,8 +135,8 @@ export default function Sidebar({ frame, meta, agentTimestamp, selected, onFocus
   // On phones the panel becomes a collapsible bottom sheet under the map; on
   // desktop it's the resizable right rail. `mobileOpen` drives the sheet height.
   const isDesktop = useMediaQuery("(min-width: 768px)");
-  // Default to Chat on mobile (the panel's primary use there); Alerts on desktop.
-  const [tab, setTab] = useState<Tab>(isDesktop ? "alerts" : "chat");
+  // Default to the Chat tab everywhere — it's the primary surface for the demo.
+  const [tab, setTab] = useState<Tab>("chat");
   const [mobileOpen, setMobileOpen] = useState(false);
 
   // Operator-resizable panel. Width persists across reloads; the map area is

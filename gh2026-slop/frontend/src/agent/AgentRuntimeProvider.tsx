@@ -1,10 +1,21 @@
-import { useRef, type ReactNode } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 import {
   AssistantRuntimeProvider,
   useLocalRuntime,
+  type AssistantRuntime,
   type ChatModelAdapter,
   type ThreadMessage,
 } from "@assistant-ui/react";
+import * as store from "./chat-store";
+import type { SavedChat } from "./chat-store";
 
 /**
  * Custom assistant-ui runtime that streams from our Python agent harness
@@ -144,6 +155,117 @@ function makeAdapter(
   };
 }
 
+// --- chat history ------------------------------------------------------------
+
+export type ChatHistoryApi = {
+  chats: SavedChat[];
+  activeId: string | null;
+  /** Load a saved conversation into the live thread. */
+  openChat: (id: string) => void;
+  /** Clear the thread and begin a brand-new conversation. */
+  newChat: () => void;
+  deleteChat: (id: string) => void;
+  renameChat: (id: string, title: string) => void;
+};
+
+const ChatHistoryContext = createContext<ChatHistoryApi | null>(null);
+
+/** Access the saved-chat history (list, open, new, delete, rename). */
+export function useChatHistory(): ChatHistoryApi {
+  const ctx = useContext(ChatHistoryContext);
+  if (!ctx) throw new Error("useChatHistory must be used within <AgentRuntimeProvider>");
+  return ctx;
+}
+
+/**
+ * Bridges the live assistant-ui thread to the persistent chat store:
+ *  - on mount, restores the last-active conversation,
+ *  - autosaves the thread (debounced) as the operator talks,
+ *  - exposes open / new / delete / rename to the history UI.
+ */
+function ChatHistoryController({
+  runtime,
+  children,
+}: {
+  runtime: AssistantRuntime;
+  children: ReactNode;
+}) {
+  const chats = useSyncExternalStore(store.subscribe, store.listChats);
+  const activeId = useSyncExternalStore(store.subscribe, store.getActiveId);
+
+  // While we programmatically import/reset the thread, the resulting change
+  // notifications must NOT trigger an autosave (it would reorder/rewrite chats).
+  const suppress = useRef(false);
+  const saveTimer = useRef<ReturnType<typeof setTimeout>>();
+
+  const withSuppressedSave = (fn: () => void) => {
+    suppress.current = true;
+    fn();
+    // Clear after the thread's change notifications have flushed.
+    setTimeout(() => {
+      suppress.current = false;
+    }, 0);
+  };
+
+  // Restore the last-active conversation once, on first mount.
+  const restored = useRef(false);
+  useEffect(() => {
+    if (restored.current) return;
+    restored.current = true;
+    const id = store.getActiveId();
+    const chat = id ? store.getChat(id) : undefined;
+    if (chat) withSuppressedSave(() => runtime.thread.import(chat.repo));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Autosave: debounce thread changes and persist the exported repository.
+  useEffect(() => {
+    const unsub = runtime.thread.subscribe(() => {
+      if (suppress.current) return;
+      clearTimeout(saveTimer.current);
+      saveTimer.current = setTimeout(() => {
+        store.saveActiveRepo(runtime.thread.export());
+      }, 500);
+    });
+    return () => {
+      unsub();
+      clearTimeout(saveTimer.current);
+    };
+  }, [runtime]);
+
+  const api = useMemo<ChatHistoryApi>(
+    () => ({
+      chats,
+      activeId,
+      openChat: (id) => {
+        const chat = store.getChat(id);
+        if (!chat) return;
+        store.setActive(id);
+        withSuppressedSave(() => runtime.thread.import(chat.repo));
+      },
+      newChat: () => {
+        store.startNewChat();
+        withSuppressedSave(() => runtime.thread.reset());
+      },
+      deleteChat: (id) => {
+        const wasActive = store.getActiveId() === id;
+        store.deleteChat(id);
+        if (!wasActive) return;
+        // The active chat was removed — load whatever the store fell back to.
+        const next = store.getActiveId();
+        const chat = next ? store.getChat(next) : undefined;
+        withSuppressedSave(() =>
+          chat ? runtime.thread.import(chat.repo) : runtime.thread.reset(),
+        );
+      },
+      renameChat: (id, title) => store.renameChat(id, title),
+    }),
+    [chats, activeId, runtime],
+  );
+
+  return <ChatHistoryContext.Provider value={api}>{children}</ChatHistoryContext.Provider>;
+}
+
 export function AgentRuntimeProvider({
   timestamp,
   selection,
@@ -170,7 +292,7 @@ export function AgentRuntimeProvider({
   const runtime = useLocalRuntime(adapterRef.current);
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      {children}
+      <ChatHistoryController runtime={runtime}>{children}</ChatHistoryController>
     </AssistantRuntimeProvider>
   );
 }
