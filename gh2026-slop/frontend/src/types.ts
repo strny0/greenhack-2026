@@ -95,6 +95,60 @@ export interface Meta {
   engine: string;
 }
 
+// --- forecast-vs-actual deviation triage -------------------------------------
+
+export type RiskTier = "none" | "low" | "medium" | "high";
+
+/** One hour of the precomputed deterministic deviation-risk timeline. */
+export interface DeviationRecord {
+  ts: string;
+  risk_tier: RiskTier;
+  score: number; // 0..1, ribbon intensity
+  significant: boolean;
+  force_notify: boolean;
+  force_reasons: string[];
+  solar_delta_mw: number; // actual − plan
+  wind_delta_mw: number;
+  solar_z: number;
+  wind_z: number;
+  load_z: number;
+  max_line_loading_pct: number;
+  slack_mw: number;
+  converged: boolean;
+  headline: string; // terse "what", e.g. "wind −190 MW (−1.8σ)"
+  where: "solar" | "wind" | "load" | "grid";
+}
+
+/** Per-generator deviation, from the on-settle finest-granularity assessment. */
+export interface DeviationItem {
+  kind: "solar" | "wind";
+  gen: string;
+  bus: string | null;
+  planned_mw: number;
+  actual_mw: number;
+  delta_mw: number;
+  pct: number | null;
+}
+
+/** The on-settle `engine.assess_deviation` bundle (subset the UI consumes). */
+export interface DeviationAssessment {
+  timestamp: string;
+  system: {
+    solar: { planned_mw: number; actual_mw: number; delta_mw: number; pct: number | null };
+    wind: { planned_mw: number; actual_mw: number; delta_mw: number; pct: number | null };
+  };
+  worst_deviations: DeviationItem[];
+  grid: {
+    converged: boolean;
+    max_line_loading_pct: number;
+    n_alerts: number;
+    active_breaches: { element_id: string; message: string }[];
+  };
+  significant: boolean;
+  safety_net: { force_notify: boolean; reasons: string[] };
+  n1?: { ran: boolean; worst: unknown[] };
+}
+
 export interface WeatherPoint {
   bus: string;
   lon: number;

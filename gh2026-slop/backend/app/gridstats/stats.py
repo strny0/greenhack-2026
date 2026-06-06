@@ -58,6 +58,11 @@ class GridStatsBundle:
     # per-hour per-branch loading_percent (cols = branch names), shared metrics index
     branch_loadings: pd.DataFrame
 
+    # per-hour deterministic deviation-risk timeline (see deviation.py). Populated
+    # lazily: None on a freshly-built or v1 bundle, computed on first access and
+    # cached here by the GridStats facade. Persisted as deviation_timeline.parquet.
+    deviation: "pd.DataFrame | None" = None
+
     # dataset window + provenance (populated by build/load)
     first_ts: str = ""
     last_ts: str = ""
@@ -160,7 +165,7 @@ class GridStatsBundle:
             first_ts=first_ts,
             last_ts=last_ts,
             built_at=built_at,
-            schema_version=1,
+            schema_version=2,
         )
 
 

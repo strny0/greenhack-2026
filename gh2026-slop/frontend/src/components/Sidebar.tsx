@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
-import type { ContingencyResult, Meta, StateFrame, WeatherPoint, WhatIfResponse } from "../types";
+import type {
+  ContingencyResult,
+  DeviationAssessment,
+  DeviationRecord,
+  Meta,
+  StateFrame,
+  WeatherPoint,
+  WhatIfResponse,
+} from "../types";
+import { tierTone } from "@/lib/deviation";
 import type { Selection } from "./MapView";
 import AgentChat from "./AgentChat";
 import { AgentRuntimeProvider } from "../agent/AgentRuntimeProvider";
@@ -42,6 +51,10 @@ interface Props {
   onClearFocus: () => void;
   onSelect: (s: Selection | null) => void;
   onZoom: (kind: "node" | "line", id: string) => void;
+  dev: DeviationRecord | null;
+  triage: DeviationAssessment | null;
+  onExplain: () => void;
+  openChatNonce: number;
 }
 
 type Tab = "alerts" | "n1" | "whatif" | "weather" | "chat";
@@ -105,13 +118,33 @@ const MAX_WIDTH = 720;
 const DEFAULT_WIDTH = 390;
 const WIDTH_KEY = "sidebar-width";
 
-export default function Sidebar({ frame, meta, selected, onFocus, onClearFocus, onSelect, onZoom }: Props) {
+export default function Sidebar({
+  frame,
+  meta,
+  selected,
+  onFocus,
+  onClearFocus,
+  onSelect,
+  onZoom,
+  dev,
+  triage,
+  onExplain,
+  openChatNonce,
+}: Props) {
   // On phones the panel becomes a collapsible bottom sheet under the map; on
   // desktop it's the resizable right rail. `mobileOpen` drives the sheet height.
   const isDesktop = useMediaQuery("(min-width: 768px)");
   // Default to Chat on mobile (the panel's primary use there); Alerts on desktop.
   const [tab, setTab] = useState<Tab>(isDesktop ? "alerts" : "chat");
   const [mobileOpen, setMobileOpen] = useState(false);
+
+  // "Explain (AI)" from the banner / deviation section opens the Chat tab.
+  useEffect(() => {
+    if (openChatNonce > 0) {
+      setTab("chat");
+      setMobileOpen(true);
+    }
+  }, [openChatNonce]);
 
   // Operator-resizable panel. Width persists across reloads; the map area is
   // flex-1 and reflows around whatever width we land on.
@@ -164,7 +197,10 @@ export default function Sidebar({ frame, meta, selected, onFocus, onClearFocus, 
     return out;
   }, [frame, meta]);
 
-  const nAlerts = alerts.filter((a) => a.sev === "alert").length;
+  // The Alerts tab badge also lights when the current hour is a high / forced
+  // plan-deviation, even if no line/voltage limit is breached.
+  const devUrgent = !!dev && (dev.risk_tier === "high" || dev.force_notify);
+  const nAlerts = Math.max(alerts.filter((a) => a.sev === "alert").length, devUrgent ? 1 : 0);
 
   // Wiring for the clickable element chips the agent emits in chat. Reuses the
   // same focus/select the rest of the sidebar uses; `has` enforces exact-match
@@ -278,7 +314,13 @@ export default function Sidebar({ frame, meta, selected, onFocus, onClearFocus, 
             <TabsContent value="alerts" className="m-0 min-h-0 flex-1">
               <ScrollArea className="h-full">
                 <div className="p-3">
-                  <AlertsTab alerts={alerts} onPick={(id, kind) => { onFocus([id]); onSelect({ kind, id }); }} />
+                  <AlertsTab
+                    alerts={alerts}
+                    dev={dev}
+                    triage={triage}
+                    onExplain={onExplain}
+                    onPick={(id, kind) => { onFocus([id]); onSelect({ kind, id }); }}
+                  />
                 </div>
               </ScrollArea>
             </TabsContent>
@@ -317,21 +359,107 @@ export default function Sidebar({ frame, meta, selected, onFocus, onClearFocus, 
   );
 }
 
-function AlertsTab({ alerts, onPick }: { alerts: any[]; onPick: (id: string, kind: "line" | "node") => void }) {
-  if (!alerts.length)
-    return <Note>No active alerts or warnings at this timestamp. The grid is within limits.</Note>;
+function PlanDeviationSection({
+  dev,
+  triage,
+  onExplain,
+  onPick,
+}: {
+  dev: DeviationRecord;
+  triage: DeviationAssessment | null;
+  onExplain: () => void;
+  onPick: (id: string, kind: "line" | "node") => void;
+}) {
+  const tierLabel = dev.force_notify ? "action required" : `${dev.risk_tier} risk`;
+  const worst = triage?.worst_deviations ?? [];
   return (
     <>
-      <SectionTitle>{alerts.length} active conditions</SectionTitle>
-      {alerts.map((a) => (
-        <Item
-          key={a.kind + a.id}
-          onClick={() => onPick(a.id, a.kind)}
-          title={a.id}
-          pill={<Pill tone={a.sev}>{a.sev}</Pill>}
-          desc={a.msg}
-        />
-      ))}
+      <SectionTitle>Plan deviation</SectionTitle>
+      <Item
+        title={dev.headline}
+        pill={<Pill tone={dev.force_notify ? "alert" : tierTone(dev.risk_tier)}>{tierLabel}</Pill>}
+        desc={
+          <>
+            solar {dev.solar_delta_mw >= 0 ? "+" : ""}
+            {dev.solar_delta_mw} MW · wind {dev.wind_delta_mw >= 0 ? "+" : ""}
+            {dev.wind_delta_mw} MW · max line {dev.max_line_loading_pct}% · balancing{" "}
+            {dev.slack_mw >= 0 ? "+" : ""}
+            {dev.slack_mw} MW
+            {dev.force_notify && dev.force_reasons.length > 0 && (
+              <ul className="mt-1 list-disc pl-4 text-red-300/90">
+                {dev.force_reasons.map((r, i) => (
+                  <li key={i}>{r}</li>
+                ))}
+              </ul>
+            )}
+          </>
+        }
+      />
+      {dev.risk_tier !== "none" && (
+        <Button variant="outline" size="sm" className="mb-2 w-full" onClick={onExplain}>
+          Explain with AI
+        </Button>
+      )}
+      {worst.length > 0 && (
+        <>
+          <SectionTitle>Worst generators ({worst.length})</SectionTitle>
+          {worst.slice(0, 8).map((d) => (
+            <Item
+              key={d.gen}
+              onClick={() => d.bus && onPick(d.bus, "node")}
+              title={`${d.gen}${d.bus ? ` · ${d.bus}` : ""}`}
+              pill={<Pill tone={d.kind === "solar" ? "warn" : "ok"}>{d.kind}</Pill>}
+              desc={
+                <>
+                  plan {d.planned_mw} MW → actual {d.actual_mw} MW (Δ {d.delta_mw >= 0 ? "+" : ""}
+                  {d.delta_mw} MW{d.pct != null ? `, ${d.pct >= 0 ? "+" : ""}${d.pct}%` : ""})
+                </>
+              }
+            />
+          ))}
+        </>
+      )}
+    </>
+  );
+}
+
+function AlertsTab({
+  alerts,
+  dev,
+  triage,
+  onExplain,
+  onPick,
+}: {
+  alerts: any[];
+  dev: DeviationRecord | null;
+  triage: DeviationAssessment | null;
+  onExplain: () => void;
+  onPick: (id: string, kind: "line" | "node") => void;
+}) {
+  const showDeviation = !!dev && (dev.risk_tier !== "none" || dev.force_notify);
+  return (
+    <>
+      {showDeviation && (
+        <PlanDeviationSection dev={dev!} triage={triage} onExplain={onExplain} onPick={onPick} />
+      )}
+      {alerts.length > 0 ? (
+        <>
+          <SectionTitle>{alerts.length} active grid conditions</SectionTitle>
+          {alerts.map((a) => (
+            <Item
+              key={a.kind + a.id}
+              onClick={() => onPick(a.id, a.kind)}
+              title={a.id}
+              pill={<Pill tone={a.sev}>{a.sev}</Pill>}
+              desc={a.msg}
+            />
+          ))}
+        </>
+      ) : (
+        !showDeviation && (
+          <Note>No active alerts or warnings at this timestamp. The grid is within limits.</Note>
+        )
+      )}
     </>
   );
 }

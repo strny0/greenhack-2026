@@ -31,6 +31,7 @@ class GridStats:
 
     def __init__(self, bundle: GridStatsBundle) -> None:
         self.bundle = bundle
+        self._deviation_records: list[dict] | None = None
 
     # --- construction --------------------------------------------------------
 
@@ -95,6 +96,26 @@ class GridStats:
         For a single hour use explain_hour or deep_dive instead.
         """
         return insights.interesting_days(self.bundle, start_date, end_date, n)
+
+    def deviation_timeline(self) -> list[dict]:
+        """Whole-dataset deterministic deviation-risk timeline (one record per hour).
+
+        Cheap screening layer for the continuous-evaluation UI: per-hour
+        ``risk_tier`` / ``force_notify`` / system plan-vs-actual deltas, with NO
+        pandapower solve and NO LLM (see ``deviation.py``). Served whole and loaded
+        once by the frontend, which indexes it by timestamp.
+
+        Reuses the precomputed ``deviation_timeline.parquet`` if the bundle carried
+        it; otherwise (v1 bundle) computes it once from the loaded bundle and caches
+        it on the bundle + as a JSON-ready list here.
+        """
+        if self._deviation_records is None:
+            from . import deviation as _dev
+
+            if self.bundle.deviation is None:
+                self.bundle.deviation = _dev.deviation_timeline(self.bundle)
+            self._deviation_records = _dev.records_from_frame(self.bundle.deviation)
+        return self._deviation_records
 
     def explain_hour(self, timestamp: str) -> dict:
         """Compact anomaly snapshot for a single hour (lightweight).

@@ -23,7 +23,7 @@ import pandas as pd
 from . import config
 from .stats import GridStatsBundle
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def save_bundle(
@@ -49,6 +49,12 @@ def save_bundle(
     gs.branch_pct90.to_parquet(out / "branch_pct90.parquet")
     gs.branch_pct95.to_parquet(out / "branch_pct95.parquet")
     gs.branch_pct99.to_parquet(out / "branch_pct99.parquet")
+
+    # deterministic deviation-risk timeline (one row per hour) — computed here from
+    # the already-built bundle so the runtime endpoint serves it without recomputing.
+    from .deviation import deviation_timeline
+
+    deviation_timeline(gs).to_parquet(out / "deviation_timeline.parquet")
 
     baselines = {
         "forecast_error": gs.forecast_error,
@@ -106,6 +112,11 @@ def load_bundle(dir: "Path | None" = None) -> GridStatsBundle:
 
     baselines = json.loads((d / "baselines.json").read_text(encoding="utf-8"))
 
+    # deviation timeline is optional: a v1 bundle predates it, in which case it is
+    # left as None and recomputed on first access from the loaded bundle.
+    deviation_path = d / "deviation_timeline.parquet"
+    deviation = pd.read_parquet(deviation_path) if deviation_path.exists() else None
+
     return GridStatsBundle(
         residuals=residuals,
         residual_std=baselines.get("residual_std", {}),
@@ -117,6 +128,7 @@ def load_bundle(dir: "Path | None" = None) -> GridStatsBundle:
         forecast=forecast,
         realtime=realtime,
         branch_loadings=branch_loadings,
+        deviation=deviation,
         first_ts=baselines.get("first_ts", metrics.index[0].isoformat()),
         last_ts=baselines.get("last_ts", metrics.index[-1].isoformat()),
         built_at=baselines.get("built_at", ""),

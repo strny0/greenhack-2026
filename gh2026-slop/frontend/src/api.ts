@@ -1,6 +1,8 @@
 import type {
   Alert,
   ContingencyResult,
+  DeviationAssessment,
+  DeviationRecord,
   Meta,
   StateFrame,
   WeatherPoint,
@@ -89,6 +91,14 @@ export const api = {
 
   weather: (): Promise<{ points: WeatherPoint[]; summary: string }> =>
     fetch("/api/weather").then(J),
+
+  // Whole-year deterministic deviation-risk timeline (loaded once, indexed by ts).
+  deviationTimeline: (): Promise<{ records: DeviationRecord[]; built_at: string }> =>
+    fetch("/api/deviation/timeline").then(J),
+
+  // Finest-granularity per-generator assessment for one settled hour (real solve).
+  deviationTriage: (timestamp: string): Promise<DeviationAssessment> =>
+    fetch(`/api/deviation/triage?timestamp=${encodeURIComponent(timestamp)}`).then(J),
 
   chat: (
     timestamp: string,

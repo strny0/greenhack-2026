@@ -1,8 +1,9 @@
 import { Pause, Play } from "lucide-react";
-import type { StateFrame } from "../types";
+import type { DeviationRecord, Meta, StateFrame } from "../types";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { cn } from "@/lib/utils";
+import RiskRibbon from "./RiskRibbon";
 
 interface Props {
   frame: StateFrame;
@@ -13,6 +14,8 @@ interface Props {
   togglePlay: () => void;
   mode: "map" | "sld";
   onModeChange: (m: "map" | "sld") => void;
+  meta: Meta;
+  devByTs: Map<string, DeviationRecord>;
 }
 
 const fmt = (ts: string) =>
@@ -60,6 +63,8 @@ export default function TopBar({
   togglePlay,
   mode,
   onModeChange,
+  meta,
+  devByTs,
 }: Props) {
   const s = frame.summary;
   return (
@@ -144,14 +149,23 @@ export default function TopBar({
         >
           {playing ? <Pause className="size-4" /> : <Play className="size-4" />}
         </Button>
-        <Slider
-          className="flex-1"
-          min={0}
-          max={Math.max(0, frames.length - 1)}
-          step={1}
-          value={[idx]}
-          onValueChange={(v) => setIdx(v[0])}
-        />
+        <div className="flex flex-1 flex-col gap-1.5">
+          <Slider
+            className="w-full"
+            min={0}
+            max={Math.max(0, frames.length - 1)}
+            step={1}
+            value={[idx]}
+            onValueChange={(v) => setIdx(v[0])}
+          />
+          <RiskRibbon
+            frames={frames}
+            devByTs={devByTs}
+            idx={idx}
+            meta={meta}
+            onJump={setIdx}
+          />
+        </div>
         <span className="min-w-[150px] text-right tabular-nums">
           {fmt(frame.timestamp)}
         </span>

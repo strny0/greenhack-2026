@@ -29,10 +29,32 @@ app.add_middleware(
 )
 
 
+# --- gridstats (precomputed deviation timeline + statistical insights) -------
+# Lazy process-wide facade over the precomputed bundle. Loading it is just parquet
+# reads (no pandapower); a missing bundle degrades to a clear 503 rather than a crash.
+_gs_singleton = None
+
+
+def _gridstats():
+    global _gs_singleton
+    if _gs_singleton is None:
+        from .gridstats import GridStats
+
+        _gs_singleton = GridStats.load()
+    return _gs_singleton
+
+
 @app.on_event("startup")
 def _startup() -> None:
     n = engine.preload(config.PRELOAD_START, config.PRELOAD_FRAMES)
     print(f"[grid-pulse] preloaded {n} frames; {len(store.timestamps)} snapshots available")
+    # Warm the gridstats bundle so the first /api/deviation/timeline isn't slow.
+    # Non-fatal: the deviation endpoints surface a 503 if the bundle isn't built.
+    try:
+        gs = _gridstats()
+        print(f"[grid-pulse] gridstats bundle loaded; {len(gs.deviation_timeline())} deviation hours")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[grid-pulse] gridstats bundle unavailable ({exc}); run `python -m app.gridstats.build`")
 
 
 # --- meta --------------------------------------------------------------------
@@ -127,6 +149,38 @@ def whatif(req: WhatIfRequest) -> WhatIfResponse:
 @app.get("/api/weather")
 async def weather_endpoint(timestamp: str | None = Query(None)) -> dict:
     return await weather.weather_overlay(timestamp)
+
+
+# --- forecast-vs-actual deviation triage -------------------------------------
+
+
+@app.get("/api/deviation/timeline")
+def deviation_timeline() -> dict:
+    """Whole-dataset deterministic deviation-risk timeline (one record per hour).
+
+    Served from the precomputed gridstats bundle — no pandapower solve, no LLM.
+    The frontend loads this once and indexes it by timestamp to drive the live
+    tier while scrubbing and the history-so-far risk ribbon.
+    """
+    try:
+        gs = _gridstats()
+    except FileNotFoundError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    return {"records": gs.deviation_timeline(), "built_at": gs.bundle.built_at}
+
+
+@app.get("/api/deviation/triage")
+def deviation_triage(timestamp: str = Query(...)) -> dict:
+    """Finest-granularity deviation assessment for ONE hour (on settle).
+
+    Runs ``engine.assess_deviation`` — a real AC solve (LRU-cached) yielding the
+    per-generator worst deviations (with bus), active breaches, and conditional
+    N-1. The deterministic core only; the LLM verdict comes via /api/agent/stream.
+    Called only when the operator settles on an hour, never during scrubbing.
+    """
+    if not store.timestamps:
+        raise HTTPException(503, "No data loaded")
+    return engine.assess_deviation(timestamp)
 
 
 # --- chatbot -----------------------------------------------------------------
