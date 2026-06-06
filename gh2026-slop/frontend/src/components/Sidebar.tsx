@@ -5,6 +5,8 @@ import type {
   DeviationAssessment,
   DeviationRecord,
   Meta,
+  PresetKey,
+  ScenarioSpec,
   StateFrame,
   WeatherPoint,
   WhatIfResponse,
@@ -27,6 +29,17 @@ import {
 } from "@/components/ui/select";
 import { ChevronDownIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { buildLabelMap, formatGenTypes, labelOf, NODE_KIND_LABEL } from "@/lib/gridmeta";
+
+interface AlertRow {
+  id: string;
+  kind: "line" | "node";
+  sev: "alert" | "warn";
+  label: string;
+  kindText: string;
+  msg: string;
+  val: number;
+}
 
 /** Reactive media-query match (used to branch the desktop / mobile layout). */
 function useMediaQuery(query: string): boolean {
@@ -46,6 +59,12 @@ function useMediaQuery(query: string): boolean {
 interface Props {
   frame: StateFrame;
   meta: Meta;
+  /**
+   * The currently-viewed snapshot timestamp, derived from `meta` (the selected
+   * day + hour) so it updates the *instant* the day changes — before the heavy
+   * window data finishes loading. Drives the agent's grid-state context.
+   */
+  agentTimestamp: string;
   selected: Selection | null;
   onFocus: (ids: string[]) => void;
   onClearFocus: () => void;
@@ -55,6 +74,12 @@ interface Props {
   triage: DeviationAssessment | null;
   onExplain: () => void;
   openChatNonce: number;
+  /** Active whole-day failure simulation (its resolved spec), or null. */
+  simulation: { spec: ScenarioSpec } | null;
+  simLoading: boolean;
+  simError: string | null;
+  onActivateSim: (preset: PresetKey) => void;
+  onExitSim: () => void;
 }
 
 type Tab = "alerts" | "n1" | "whatif" | "weather" | "chat";
@@ -77,11 +102,13 @@ function Pill({ tone, children }: { tone: Tone; children: React.ReactNode }) {
 
 function Item({
   onClick,
+  onDoubleClick,
   title,
   pill,
   desc,
 }: {
   onClick?: () => void;
+  onDoubleClick?: () => void;
   title: React.ReactNode;
   pill?: React.ReactNode;
   desc?: React.ReactNode;
@@ -89,9 +116,10 @@ function Item({
   return (
     <div
       onClick={onClick}
+      onDoubleClick={onDoubleClick}
       className={cn(
         "mb-2 rounded-lg border bg-background p-2.5 transition-colors",
-        onClick && "cursor-pointer hover:border-ring",
+        (onClick || onDoubleClick) && "cursor-pointer hover:border-ring",
       )}
     >
       <div className="flex items-center justify-between gap-2 font-semibold">
@@ -121,6 +149,7 @@ const WIDTH_KEY = "sidebar-width";
 export default function Sidebar({
   frame,
   meta,
+  agentTimestamp,
   selected,
   onFocus,
   onClearFocus,
@@ -130,6 +159,11 @@ export default function Sidebar({
   triage,
   onExplain,
   openChatNonce,
+  simulation,
+  simLoading,
+  simError,
+  onActivateSim,
+  onExitSim,
 }: Props) {
   // On phones the panel becomes a collapsible bottom sheet under the map; on
   // desktop it's the resizable right rail. `mobileOpen` drives the sheet height.
@@ -183,15 +217,19 @@ export default function Sidebar({
   const alerts = useMemo(() => {
     const warn = meta.thresholds.line_loading_warn ?? 75;
     const alert = meta.thresholds.line_loading_alert ?? 90;
-    const out: { id: string; kind: "line" | "node"; sev: "alert" | "warn"; msg: string; val: number }[] = [];
+    const out: AlertRow[] = [];
     for (const l of frame.lines) {
       if (l.loading_pct == null) continue;
-      if (l.loading_pct >= alert) out.push({ id: l.id, kind: "line", sev: "alert", msg: `${l.name} at ${l.loading_pct}%`, val: l.loading_pct });
-      else if (l.loading_pct >= warn) out.push({ id: l.id, kind: "line", sev: "warn", msg: `${l.name} at ${l.loading_pct}%`, val: l.loading_pct });
+      const kindText = l.kind === "trafo" ? "Transformer" : "Transmission line";
+      if (l.loading_pct >= alert) out.push({ id: l.id, kind: "line", sev: "alert", label: labelOf(l), kindText, msg: `loaded at ${l.loading_pct}%`, val: l.loading_pct });
+      else if (l.loading_pct >= warn) out.push({ id: l.id, kind: "line", sev: "warn", label: labelOf(l), kindText, msg: `loaded at ${l.loading_pct}%`, val: l.loading_pct });
     }
     for (const n of frame.nodes) {
-      if (n.state === "alert") out.push({ id: n.id, kind: "node", sev: "alert", msg: `${n.name} voltage ${n.vm_pu?.toFixed(3)} p.u. — limit breach`, val: n.vm_pu ?? 0 });
-      else if (n.state === "warn") out.push({ id: n.id, kind: "node", sev: "warn", msg: `${n.name} voltage ${n.vm_pu?.toFixed(3)} p.u. — near limit`, val: n.vm_pu ?? 0 });
+      const role = n.is_slack ? "Slack bus" : NODE_KIND_LABEL[n.type];
+      const gens = formatGenTypes(n.gen_types);
+      const kindText = gens ? `${role} · ${gens}` : role;
+      if (n.state === "alert") out.push({ id: n.id, kind: "node", sev: "alert", label: labelOf(n), kindText, msg: `voltage ${n.vm_pu?.toFixed(3)} p.u. — limit breach`, val: n.vm_pu ?? 0 });
+      else if (n.state === "warn") out.push({ id: n.id, kind: "node", sev: "warn", label: labelOf(n), kindText, msg: `voltage ${n.vm_pu?.toFixed(3)} p.u. — near limit`, val: n.vm_pu ?? 0 });
     }
     out.sort((a, b) => (a.sev === b.sev ? b.val - a.val : a.sev === "alert" ? -1 : 1));
     return out;
@@ -201,6 +239,9 @@ export default function Sidebar({
   // plan-deviation, even if no line/voltage limit is breached.
   const devUrgent = !!dev && (dev.risk_tier === "high" || dev.force_notify);
   const nAlerts = Math.max(alerts.filter((a) => a.sev === "alert").length, devUrgent ? 1 : 0);
+
+  // id -> override display label, for the server-computed N-1 / what-if results.
+  const labels = useMemo(() => buildLabelMap(frame.nodes, frame.lines), [frame]);
 
   // Wiring for the clickable element chips the agent emits in chat. Reuses the
   // same focus/select the rest of the sidebar uses; `has` enforces exact-match
@@ -220,8 +261,9 @@ export default function Sidebar({
         kind === "node"
           ? frame.nodes.some((n) => n.id === id)
           : frame.lines.some((l) => l.id === id),
+      label: (_kind, id) => labels[id] ?? id,
     }),
-    [frame, onFocus, onSelect, onZoom],
+    [frame, labels, onFocus, onSelect, onZoom],
   );
 
   const TABS: [Tab, string, number][] = [
@@ -235,7 +277,7 @@ export default function Sidebar({
   return (
     // The runtime provider is mounted once, above the tab body, so the agent
     // conversation persists when the operator switches tabs.
-    <AgentRuntimeProvider timestamp={frame.timestamp} selection={selected}>
+    <AgentRuntimeProvider timestamp={agentTimestamp || frame.timestamp} selection={selected} simulation={simulation?.spec ?? null}>
       <aside
         className={cn(
           "relative flex flex-col bg-card",
@@ -320,6 +362,7 @@ export default function Sidebar({
                     triage={triage}
                     onExplain={onExplain}
                     onPick={(id, kind) => { onFocus([id]); onSelect({ kind, id }); }}
+                    onZoom={(id, kind) => { onFocus([id]); onSelect({ kind, id }); onZoom(kind, id); }}
                   />
                 </div>
               </ScrollArea>
@@ -328,7 +371,7 @@ export default function Sidebar({
             <TabsContent value="n1" className="m-0 min-h-0 flex-1">
               <ScrollArea className="h-full">
                 <div className="p-3">
-                  <N1Tab ts={frame.timestamp} onFocus={onFocus} onSelect={onSelect} />
+                  <N1Tab ts={frame.timestamp} labels={labels} onFocus={onFocus} onSelect={onSelect} />
                 </div>
               </ScrollArea>
             </TabsContent>
@@ -336,7 +379,17 @@ export default function Sidebar({
             <TabsContent value="whatif" className="m-0 min-h-0 flex-1">
               <ScrollArea className="h-full">
                 <div className="p-3">
-                  <WhatIfTab frame={frame} onFocus={onFocus} onSelect={onSelect} />
+                  <WhatIfTab
+                    frame={frame}
+                    labels={labels}
+                    onFocus={onFocus}
+                    onSelect={onSelect}
+                    simulation={simulation}
+                    simLoading={simLoading}
+                    simError={simError}
+                    onActivateSim={onActivateSim}
+                    onExitSim={onExitSim}
+                  />
                 </div>
               </ScrollArea>
             </TabsContent>
@@ -429,12 +482,14 @@ function AlertsTab({
   triage,
   onExplain,
   onPick,
+  onZoom,
 }: {
-  alerts: any[];
+  alerts: AlertRow[];
   dev: DeviationRecord | null;
   triage: DeviationAssessment | null;
   onExplain: () => void;
   onPick: (id: string, kind: "line" | "node") => void;
+  onZoom: (id: string, kind: "line" | "node") => void;
 }) {
   const showDeviation = !!dev && (dev.risk_tier !== "none" || dev.force_notify);
   return (
@@ -444,14 +499,21 @@ function AlertsTab({
       )}
       {alerts.length > 0 ? (
         <>
-          <SectionTitle>{alerts.length} active grid conditions</SectionTitle>
+          <SectionTitle>{alerts.length} active grid conditions · double-click to zoom</SectionTitle>
           {alerts.map((a) => (
             <Item
               key={a.kind + a.id}
               onClick={() => onPick(a.id, a.kind)}
-              title={a.id}
+              onDoubleClick={() => onZoom(a.id, a.kind)}
+              title={a.label}
               pill={<Pill tone={a.sev}>{a.sev}</Pill>}
-              desc={a.msg}
+              desc={
+                <>
+                  <span className="font-medium text-foreground/80">{a.kindText}</span>
+                  {" — "}
+                  {a.msg}
+                </>
+              }
             />
           ))}
         </>
@@ -464,7 +526,7 @@ function AlertsTab({
   );
 }
 
-function N1Tab({ ts, onFocus, onSelect }: { ts: string; onFocus: (ids: string[]) => void; onSelect: (s: Selection) => void }) {
+function N1Tab({ ts, labels, onFocus, onSelect }: { ts: string; labels: Record<string, string>; onFocus: (ids: string[]) => void; onSelect: (s: Selection) => void }) {
   const [res, setRes] = useState<ContingencyResult[] | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -495,7 +557,7 @@ function N1Tab({ ts, onFocus, onSelect }: { ts: string; onFocus: (ids: string[])
               onFocus([r.contingency_id, ...r.overloaded.map((o) => o.id)]);
               onSelect({ kind: "line", id: r.contingency_id });
             }}
-            title={`trip ${r.contingency_name}`}
+            title={`trip ${labels[r.contingency_id] ?? r.contingency_name}`}
             pill={
               r.converged ? (
                 <Pill tone={r.max_loading_pct >= 100 ? "alert" : r.max_loading_pct >= 90 ? "warn" : "ok"}>
@@ -508,7 +570,7 @@ function N1Tab({ ts, onFocus, onSelect }: { ts: string; onFocus: (ids: string[])
             desc={
               r.converged
                 ? r.n_overloads > 0
-                  ? `${r.n_overloads} overloaded: ${r.overloaded.slice(0, 2).map((o) => `${o.name} ${o.loading_pct}%`).join(", ")}`
+                  ? `${r.n_overloads} overloaded: ${r.overloaded.slice(0, 2).map((o) => `${labels[o.id] ?? o.name} ${o.loading_pct}%`).join(", ")}`
                   : "no overloads — grid survives this contingency"
                 : "load flow does not converge — loss of supply / collapse"
             }
@@ -520,7 +582,33 @@ function N1Tab({ ts, onFocus, onSelect }: { ts: string; onFocus: (ids: string[])
 
 const NONE = "__none__";
 
-function WhatIfTab({ frame, onFocus, onSelect }: { frame: StateFrame; onFocus: (ids: string[]) => void; onSelect: (s: Selection) => void }) {
+const SIM_PRESETS: { key: PresetKey; label: string }[] = [
+  { key: "trip_most_loaded_line", label: "Trip most-loaded line" },
+  { key: "trip_largest_generator", label: "Trip largest generator" },
+  { key: "load_surge", label: "Load surge (+50% demand)" },
+];
+
+function WhatIfTab({
+  frame,
+  labels,
+  onFocus,
+  onSelect,
+  simulation,
+  simLoading,
+  simError,
+  onActivateSim,
+  onExitSim,
+}: {
+  frame: StateFrame;
+  labels: Record<string, string>;
+  onFocus: (ids: string[]) => void;
+  onSelect: (s: Selection) => void;
+  simulation: { spec: ScenarioSpec } | null;
+  simLoading: boolean;
+  simError: string | null;
+  onActivateSim: (preset: PresetKey) => void;
+  onExitSim: () => void;
+}) {
   const [disc, setDisc] = useState<string>(NONE);
   const [scale, setScale] = useState(1.0);
   const [res, setRes] = useState<WhatIfResponse | null>(null);
@@ -547,6 +635,45 @@ function WhatIfTab({ frame, onFocus, onSelect }: { frame: StateFrame; onFocus: (
 
   return (
     <>
+      {/* Whole-day failure simulation — overrides the loaded day live across both
+          views. Sits above the single-hour manual what-if below. */}
+      <div className="mb-3 rounded-lg border border-amber-500/40 bg-amber-500/5 p-2.5">
+        <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-amber-600 dark:text-amber-400">
+          ⚡ Live failure simulation
+        </div>
+        {simulation ? (
+          <>
+            <div className="mb-2 text-[11px] text-muted-foreground">{simulation.spec.label}</div>
+            <Button variant="outline" className="w-full" onClick={onExitSim}>
+              Exit simulation
+            </Button>
+          </>
+        ) : (
+          <>
+            <div className="mb-2 text-[11px] text-muted-foreground">
+              Apply a failure to the whole loaded day and watch alerts, buses and lines react.
+            </div>
+            <div className="flex flex-col gap-1.5">
+              {SIM_PRESETS.map((p) => (
+                <Button
+                  key={p.key}
+                  variant="outline"
+                  className="w-full justify-start"
+                  disabled={simLoading}
+                  onClick={() => onActivateSim(p.key)}
+                >
+                  {p.label}
+                </Button>
+              ))}
+            </div>
+            {simLoading && (
+              <div className="mt-2 text-[11px] text-muted-foreground">Solving 24 hours…</div>
+            )}
+            {simError && <div className="mt-2 text-[11px] text-red-500">{simError}</div>}
+          </>
+        )}
+      </div>
+
       <Note>Apply operator actions and re-run a real load flow. The map highlights what moves.</Note>
       <div className="mb-2.5">
         <label className="mb-1 block text-[11px] text-muted-foreground">Disconnect a line</label>
@@ -558,7 +685,7 @@ function WhatIfTab({ frame, onFocus, onSelect }: { frame: StateFrame; onFocus: (
             <SelectItem value={NONE}>— none —</SelectItem>
             {lines.map((l) => (
               <SelectItem key={l.id} value={l.id}>
-                {l.name} ({l.loading_pct ?? 0}%)
+                {labelOf(l)} ({l.loading_pct ?? 0}%)
               </SelectItem>
             ))}
           </SelectContent>
@@ -596,7 +723,7 @@ function WhatIfTab({ frame, onFocus, onSelect }: { frame: StateFrame; onFocus: (
             <Item
               key={d.id}
               onClick={() => onSelect({ kind: "line", id: d.id })}
-              title={d.name}
+              title={labels[d.id] ?? d.name}
               pill={
                 <Pill tone={d.after >= 100 ? "alert" : d.after >= 90 ? "warn" : "ok"}>
                   {d.before}% → {d.after}%

@@ -4,7 +4,11 @@ export type NodeType = "generation" | "load" | "substation" | "slack";
 export interface GridNode {
   id: string;
   name: string;
+  /** Operator-friendly display name from overrides; falls back to `name`. */
+  label: string;
   type: NodeType;
+  /** Generator fuel types at this bus, ranked by capacity (e.g. ["solar","hydro"]). */
+  gen_types: string[];
   zone: string;
   lat: number;
   lon: number;
@@ -26,6 +30,8 @@ export interface GridNode {
 export interface GridLine {
   id: string;
   name: string;
+  /** Operator-friendly display name from overrides; falls back to `name`. */
+  label: string;
   from_node: string;
   to_node: string;
   kind: "line" | "trafo";
@@ -81,6 +87,28 @@ export interface WhatIfResponse {
   scenario: StateFrame;
   diffs: { id: string; name: string; before: number; after: number; delta: number }[];
   new_alerts: Alert[];
+}
+
+export type PresetKey =
+  | "trip_most_loaded_line"
+  | "trip_largest_generator"
+  | "load_surge";
+
+/** A concrete failure scenario resolved from a preset, applied across the day. */
+export interface ScenarioSpec {
+  preset: string;
+  label: string;
+  disconnect_lines: string[];
+  trip_nodes: string[];
+  load_scale: number;
+  resolved: string[];
+  feasible: boolean;
+  reason: string;
+}
+
+export interface WhatIfWindowResponse {
+  scenario: ScenarioSpec;
+  frames: StateFrame[];
 }
 
 export interface Meta {

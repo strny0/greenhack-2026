@@ -41,7 +41,8 @@ import anyio
 from . import config, engine, sandbox, weather
 from .data_loader import store
 from .gridstats import tools as _gst
-from .model import WhatIfRequest
+from .gridstats.overrides import HourActualsOverride
+from .model import ScenarioSpec, WhatIfRequest
 
 # `OpenAIChatModel` is the chat-completions class (works with third-party
 # OpenAI-compatible gateways); older versions name it `OpenAIModel`.
@@ -83,6 +84,8 @@ surprise_z → "significantly above/below forecast"; pct_rank 90/95/99 → "abov
 normal range for this time of day"; off_plan: true → "the day ran off-plan". Use MW \
 deltas and % where they add clarity, but drop the statistical notation entirely unless \
 it is explicitly asked for.
+- When doing tool calls that require a timestamp, make sure to always re-fetch the current day \
+timestamp if the query applies to the current date - check just in case.
 - You are read-only: you advise, you do not switch equipment.
 
 Plan deviation / periodic safety check: use forecast_deviation_triage. It compares \
@@ -117,11 +120,42 @@ class Selection:
 
 @dataclass
 class Deps:
-    """Per-request context: the hour the operator is viewing, and whatever they
-    currently have selected on the map (if anything)."""
+    """Per-request context: the hour the operator is viewing, whatever they
+    currently have selected on the map (if anything), and the active failure
+    simulation (if one is running for the loaded day)."""
 
     timestamp: str
     selection: Selection | None = None
+    simulation: ScenarioSpec | None = None
+
+
+def _frame_for(ctx: RunContext[Deps]):
+    """The frame the operator is actually looking at: the scenario frame when a
+    failure simulation is active, otherwise the real base frame."""
+    sim = ctx.deps.simulation
+    if sim is not None:
+        return engine.scenario_frame(ctx.deps.timestamp, sim)
+    return engine.base_frame(ctx.deps.timestamp)
+
+
+def _hour_override(ctx: RunContext[Deps]) -> HourActualsOverride | None:
+    """Scenario actuals for the current hour, for the statistical tools (so they
+    score the simulated grid against the real normal baseline). None when no
+    simulation is active."""
+    sim = ctx.deps.simulation
+    if sim is None:
+        return None
+    ts = store.nearest_timestamp(ctx.deps.timestamp)
+    f = engine.scenario_frame(ts, sim)
+    s = f.summary
+    return HourActualsOverride(
+        timestamp=ts,
+        total_load_mw=s.total_load_mw,
+        total_gen_mw=s.total_generation_mw,
+        max_line_loading_pct=s.max_loading_pct,
+        slack_mw=s.slack_mw,
+        branch_loadings={l.id: l.loading_pct for l in f.lines if l.loading_pct is not None},
+    )
 
 
 def _model():
@@ -144,7 +178,7 @@ def _selection_context(ctx: RunContext[Deps]) -> str:
     sel = ctx.deps.selection
     if not sel:
         return ""
-    f = engine.base_frame(ctx.deps.timestamp)
+    f = _frame_for(ctx)
     if sel.kind == "node":
         n = next((x for x in f.nodes if x.id == sel.id), None)
         if n is None:
@@ -163,6 +197,27 @@ def _selection_context(ctx: RunContext[Deps]) -> str:
         f"map ({l.kind} {l.from_node}->{l.to_node}, loading {l.loading_pct}%, state "
         f"{l.state}). When they say 'this line', 'this branch', 'the selected one', or "
         f"'it' with no other id, they mean {l.id}."
+    )
+
+
+@agent.system_prompt
+def _simulation_context(ctx: RunContext[Deps]) -> str:
+    """Tell the model when a failure simulation is active. This is the ONLY way the
+    agent learns a scenario is running — without it, it would describe the real grid
+    and never call simulation_status. Injected on every request that carries a sim."""
+    sim = ctx.deps.simulation
+    if sim is None:
+        return ""
+    return (
+        "ACTIVE FAILURE SIMULATION: a hypothetical scenario is applied to the WHOLE "
+        f"loaded day. Scenario: {sim.label or sim.preset}. The current-hour tools "
+        "(grid_summary, most_loaded_lines, line_detail, node_detail, active_alerts, "
+        "explain_hour, loading_context, deep_dive) reflect this HYPOTHETICAL "
+        "post-failure grid. Historical/range tools (compare_to, summary_at, "
+        "element_history, interesting_days, plan_adherence) and weather reflect the "
+        "REAL recorded grid. Call simulation_status for the exact base-vs-scenario "
+        "impact. Always make clear to the operator when you are describing the "
+        "simulated scenario versus real history."
     )
 
 
@@ -217,7 +272,7 @@ def _summary_dict(f) -> dict:
 def grid_summary(ctx: RunContext[Deps]) -> dict:
     """System-wide summary for the hour being viewed: generation, load, balancing
     power, losses, max line loading, and alert/warning counts."""
-    return _summary_dict(engine.base_frame(ctx.deps.timestamp))
+    return _summary_dict(_frame_for(ctx))
 
 
 @agent.tool
@@ -291,7 +346,7 @@ def most_loaded_lines(ctx: RunContext[Deps], limit: int = 8) -> list[dict]:
     """The most heavily loaded branches (lines + transformers), highest first.
     `limit` caps how many are returned (1-30)."""
     limit = max(1, min(limit, 30))
-    f = engine.base_frame(ctx.deps.timestamp)
+    f = _frame_for(ctx)
     ranked = sorted(
         (l for l in f.lines if l.loading_pct is not None),
         key=lambda l: -l.loading_pct,
@@ -302,7 +357,7 @@ def most_loaded_lines(ctx: RunContext[Deps], limit: int = 8) -> list[dict]:
 @agent.tool
 def line_detail(ctx: RunContext[Deps], line_id: str) -> dict:
     """Full live values for one branch by its id/name (line or transformer)."""
-    f = engine.base_frame(ctx.deps.timestamp)
+    f = _frame_for(ctx)
     l = next((x for x in f.lines if x.id == line_id), None)
     if l is None:
         return {"error": f"No branch '{line_id}'. Use most_loaded_lines to list ids."}
@@ -312,7 +367,7 @@ def line_detail(ctx: RunContext[Deps], line_id: str) -> dict:
 @agent.tool
 def node_detail(ctx: RunContext[Deps], node_id: str) -> dict:
     """Full live values for one bus/substation by its id/name."""
-    f = engine.base_frame(ctx.deps.timestamp)
+    f = _frame_for(ctx)
     n = next((x for x in f.nodes if x.id == node_id), None)
     if n is None:
         return {"error": f"No bus '{node_id}'."}
@@ -338,7 +393,7 @@ def bus_neighbors(ctx: RunContext[Deps], bus_id: str, hops: int = 1) -> dict:
 def active_alerts(ctx: RunContext[Deps], limit: int = 15) -> list[dict]:
     """Active alerts and warnings (overloaded lines, out-of-band voltages),
     most severe first."""
-    f = engine.base_frame(ctx.deps.timestamp)
+    f = _frame_for(ctx)
     alerts = engine.build_alerts(f)[: max(1, min(limit, 50))]
     return [
         {
@@ -428,6 +483,37 @@ def what_if(
         "new_alerts": [
             {"element_id": a.element_id, "message": a.message} for a in r.new_alerts
         ],
+    }
+
+
+@agent.tool
+def simulation_status(ctx: RunContext[Deps]) -> dict:
+    """Whether a FAILURE SIMULATION is active for the loaded day and, if so, the
+    scenario and its base-vs-scenario impact at the viewed hour. Call this when the
+    system prompt says a simulation is active, or when the operator asks what the
+    simulation/failure is doing. Returns {"active": false} when none is running."""
+    sim = ctx.deps.simulation
+    if sim is None:
+        return {"active": False}
+    base = engine.base_frame(ctx.deps.timestamp)
+    scen = engine.scenario_frame(ctx.deps.timestamp, sim)
+    base_alert_ids = {a.element_id for a in engine.build_alerts(base) if a.severity == "alert"}
+    new_alerts = [
+        {"element_id": a.element_id, "message": a.message}
+        for a in engine.build_alerts(scen)
+        if a.severity == "alert" and a.element_id not in base_alert_ids
+    ]
+    return {
+        "active": True,
+        "preset": sim.preset,
+        "label": sim.label,
+        "resolved": sim.resolved,
+        "base_max_loading_pct": base.summary.max_loading_pct,
+        "scenario_max_loading_pct": scen.summary.max_loading_pct,
+        "scenario_converged": scen.summary.converged,
+        "base_alerts": base.summary.n_alerts,
+        "scenario_alerts": scen.summary.n_alerts,
+        "new_alerts": new_alerts[:10],
     }
 
 
@@ -528,7 +614,11 @@ def explain_hour(ctx: RunContext[Deps], timestamp: str | None = None) -> dict:
     Defaults to the currently-viewed hour when timestamp is omitted.
 
     timestamp: ISO hour, e.g. "2024-09-13T18:00:00". Omit to use the viewed hour."""
-    return _gst.explain_hour(timestamp or ctx.deps.timestamp)
+    # When inspecting the CURRENT hour, score the (possibly simulated) scenario
+    # actuals against the real normal baseline; for any explicit other hour, use
+    # the real recorded actuals.
+    override = _hour_override(ctx) if timestamp is None else None
+    return _gst.explain_hour(timestamp or ctx.deps.timestamp, override=override)
 
 
 @agent.tool
@@ -557,7 +647,8 @@ def loading_context(
     Defaults to the currently-viewed hour.
 
     timestamp: ISO hour. Omit to use the viewed hour. top: branches to return (default 5)."""
-    return _gst.loading_context(timestamp or ctx.deps.timestamp, top)
+    override = _hour_override(ctx) if timestamp is None else None
+    return _gst.loading_context(timestamp or ctx.deps.timestamp, top, override=override)
 
 
 @agent.tool
@@ -589,7 +680,8 @@ def deep_dive(ctx: RunContext[Deps], timestamp: str | None = None) -> dict:
     operator explicitly asks for a full breakdown or deep-dive analysis.
 
     timestamp: ISO hour. Omit to use the viewed hour."""
-    return _gst.deep_dive(timestamp or ctx.deps.timestamp)
+    override = _hour_override(ctx) if timestamp is None else None
+    return _gst.deep_dive(timestamp or ctx.deps.timestamp, override=override)
 
 
 # --- streaming runner --------------------------------------------------------
@@ -617,7 +709,10 @@ def _jsonable(value):
 
 
 async def stream_agent(
-    messages: list[dict], timestamp: str, selection: dict | None = None
+    messages: list[dict],
+    timestamp: str,
+    selection: dict | None = None,
+    simulation: dict | None = None,
 ) -> AsyncIterator[str]:
     """Run the agent and yield NDJSON event lines for the frontend runtime.
 
@@ -642,7 +737,10 @@ async def stream_agent(
     sel = None
     if selection and selection.get("id") and selection.get("kind") in ("node", "line"):
         sel = Selection(kind=selection["kind"], id=str(selection["id"]))
-    deps = Deps(timestamp=ts, selection=sel)
+    sim = None
+    if simulation and (simulation.get("disconnect_lines") or simulation.get("trip_nodes") or simulation.get("load_scale", 1.0) != 1.0):
+        sim = ScenarioSpec(**simulation)
+    deps = Deps(timestamp=ts, selection=sel, simulation=sim)
     prompt = ""
     history = messages
     if messages and messages[-1].get("role") == "user":

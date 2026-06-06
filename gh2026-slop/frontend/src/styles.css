@@ -38,6 +38,18 @@ body {
   .smooth-shimmer { animation: none; }
 }
 
+/* Failure-simulation overlay pulse (SVG underlays in SldView). */
+@keyframes sim-pulse {
+  0%, 100% { stroke-opacity: 0.32; }
+  50%      { stroke-opacity: 0.9; }
+}
+.sim-pulse {
+  animation: sim-pulse 1.1s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .sim-pulse { animation: none; stroke-opacity: 0.6; }
+}
+
 /* MapLibre popups themed to match shadcn surfaces. */
 .maplibregl-popup-content {
   background: var(--popover);

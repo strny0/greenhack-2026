@@ -33,6 +33,7 @@ import {
   SuggestionPrimitive,
   ThreadPrimitive,
   useAuiState,
+  useThreadRuntime,
 } from "@assistant-ui/react";
 import {
   ArrowDownIcon,
@@ -46,19 +47,21 @@ import {
   PencilIcon,
   RefreshCwIcon,
   SquareIcon,
+  Trash2Icon,
 } from "lucide-react";
 import type { FC } from "react";
 
 export const Thread: FC = () => {
   return (
     <ThreadPrimitive.Root
-      className="aui-root aui-thread-root bg-background @container flex h-full flex-col"
+      className="aui-root aui-thread-root bg-background @container relative flex h-full flex-col"
       style={{
         ["--thread-max-width" as string]: "44rem",
         ["--composer-radius" as string]: "24px",
         ["--composer-padding" as string]: "10px",
       }}
     >
+      <ThreadClearButton />
       <ThreadPrimitive.Viewport
         turnAnchor="top"
         data-slot="aui_thread-viewport"
@@ -95,6 +98,25 @@ const ThreadMessage: FC = () => {
   if (isEditing) return <EditComposer />;
   if (role === "user") return <UserMessage />;
   return <AssistantMessage />;
+};
+
+const ThreadClearButton: FC = () => {
+  const runtime = useThreadRuntime();
+  const isEmpty = useAuiState((s) => s.thread.isEmpty);
+
+  if (isEmpty) return null;
+
+  return (
+    <TooltipIconButton
+      tooltip="Clear conversation"
+      variant="ghost"
+      size="icon"
+      className="absolute right-2 top-2 z-10 size-6 rounded-full opacity-40 hover:opacity-100 text-muted-foreground hover:text-destructive transition-opacity"
+      onClick={() => runtime.reset()}
+    >
+      <Trash2Icon className="size-3.5" />
+    </TooltipIconButton>
+  );
 };
 
 const ThreadScrollToBottom: FC = () => {

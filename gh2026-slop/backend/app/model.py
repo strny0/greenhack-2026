@@ -22,6 +22,9 @@ class Node(BaseModel):
     is_slack: bool
     min_vm_pu: float
     max_vm_pu: float
+    # generator fuel types at this bus, ranked by installed capacity (e.g.
+    # ["solar", "hydro"]); empty for buses with no generation.
+    gen_types: list[str] = []
     # dynamic
     vm_pu: Optional[float] = None
     vm_kv: Optional[float] = None
@@ -102,3 +105,16 @@ class WhatIfResponse(BaseModel):
     scenario: StateFrame
     diffs: list[dict]  # per-line loading change [{id, name, before, after, delta}]
     new_alerts: list[Alert]
+
+
+class ScenarioSpec(BaseModel):
+    """A concrete failure scenario (resolved from a preset) applied across a day."""
+
+    preset: str = ""  # "trip_most_loaded_line" | "trip_largest_generator" | "load_surge" | "custom"
+    label: str = ""
+    disconnect_lines: list[str] = []
+    trip_nodes: list[str] = []
+    load_scale: float = 1.0
+    resolved: list[str] = []  # element id(s) the preset chose
+    feasible: bool = True
+    reason: str = ""  # why infeasible, when feasible is False

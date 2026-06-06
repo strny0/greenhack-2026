@@ -117,7 +117,7 @@ class GridStats:
             self._deviation_records = _dev.records_from_frame(self.bundle.deviation)
         return self._deviation_records
 
-    def explain_hour(self, timestamp: str) -> dict:
+    def explain_hour(self, timestamp: str, override=None) -> dict:
         """Compact anomaly snapshot for a single hour (lightweight).
 
         Returns system metrics with STL z-scores, de-biased plan deviation per metric
@@ -155,7 +155,7 @@ class GridStats:
 
         Agent use: default tool for "what happened at <time>" / "was this hour anomalous".
         """
-        return insights.explain_hour(self.bundle, timestamp)
+        return insights.explain_hour(self.bundle, timestamp, override=override)
 
     def plan_adherence(self, day: str) -> dict:
         """Per-metric de-biased plan adherence over a full calendar day (lightweight).
@@ -187,7 +187,7 @@ class GridStats:
         """
         return insights.plan_adherence(self.bundle, day)
 
-    def loading_context(self, timestamp: str, top: int = 5) -> dict:
+    def loading_context(self, timestamp: str, top: int = 5, override=None) -> dict:
         """Top-N branches by loading at one hour vs their statistical normal band.
 
         For each branch: actual loading_pct and the p90/p95/p99 band for this
@@ -219,9 +219,9 @@ class GridStats:
         Agent use: "is this line unusually loaded" / "which lines are above their typical range".
         Complements most_loaded_lines (live ranking) with the historical norm context.
         """
-        return insights.loading_context(self.bundle, timestamp, top)
+        return insights.loading_context(self.bundle, timestamp, top, override=override)
 
-    def deep_dive(self, timestamp: str) -> dict:
+    def deep_dive(self, timestamp: str, override=None) -> dict:
         """Exhaustive single-hour breakdown — VERBOSE & EXPENSIVE context.
 
         Returns all system metrics raw + z, full per-metric plan deviation
@@ -257,4 +257,4 @@ class GridStats:
         Agent use: only when the operator explicitly requests a full / in-depth breakdown.
         explain_hour and loading_context answer most questions more cheaply.
         """
-        return insights.deep_dive(self.bundle, timestamp)
+        return insights.deep_dive(self.bundle, timestamp, override=override)

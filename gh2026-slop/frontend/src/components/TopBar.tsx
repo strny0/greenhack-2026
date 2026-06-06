@@ -4,6 +4,8 @@ import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { cn } from "@/lib/utils";
 import RiskRibbon from "./RiskRibbon";
+import DateTimePicker from "./DateTimePicker";
+import BookmarksMenu from "./BookmarksMenu";
 
 interface Props {
   frame: StateFrame;
@@ -16,6 +18,14 @@ interface Props {
   onModeChange: (m: "map" | "sld") => void;
   meta: Meta;
   devByTs: Map<string, DeviationRecord>;
+  selectedDate: Date;
+  dayBounds: { first: Date; last: Date };
+  windowLoading: boolean;
+  canPrev: boolean;
+  canNext: boolean;
+  onSelectDate: (date: Date) => void;
+  onSelectBookmark: (date: Date) => void;
+  onStepDay: (delta: -1 | 1) => void;
 }
 
 const fmt = (ts: string) =>
@@ -65,6 +75,14 @@ export default function TopBar({
   onModeChange,
   meta,
   devByTs,
+  selectedDate,
+  dayBounds,
+  windowLoading,
+  canPrev,
+  canNext,
+  onSelectDate,
+  onSelectBookmark,
+  onStepDay,
 }: Props) {
   const s = frame.summary;
   return (
@@ -140,7 +158,7 @@ export default function TopBar({
         />
       </div>
 
-      <div className="flex w-full items-center gap-3 md:w-auto md:min-w-[360px] md:flex-1 lg:min-w-[420px] lg:flex-none">
+      <div className="flex w-full flex-wrap items-center gap-3 md:w-auto md:flex-nowrap md:min-w-[360px] md:flex-1 lg:min-w-[560px] lg:flex-none">
         <Button
           variant="outline"
           size="icon"
@@ -149,7 +167,17 @@ export default function TopBar({
         >
           {playing ? <Pause className="size-4" /> : <Play className="size-4" />}
         </Button>
-        <div className="flex flex-1 flex-col gap-1.5">
+        <BookmarksMenu currentDate={selectedDate} onSelect={onSelectBookmark} />
+        <DateTimePicker
+          date={selectedDate}
+          bounds={dayBounds}
+          loading={windowLoading}
+          canPrev={canPrev}
+          canNext={canNext}
+          onSelect={onSelectDate}
+          onStep={onStepDay}
+        />
+        <div className="flex min-w-[120px] flex-1 flex-col gap-1.5">
           <Slider
             className="w-full"
             min={0}

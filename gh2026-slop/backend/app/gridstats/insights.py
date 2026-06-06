@@ -62,6 +62,35 @@ def _f(x) -> float:
     return float(x)
 
 
+def _override_matches(override, ts: pd.Timestamp) -> bool:
+    return override is not None and getattr(override, "timestamp", None) == ts.isoformat()
+
+
+def _apply_metric_override(m_row, resid_row, override, ts: pd.Timestamp):
+    """Substitute scenario actuals for the recorded ones at this hour (simulation).
+
+    Returns (metrics_dict, resid_dict). The normal baseline is untouched: only the
+    actuals being scored change. Residuals shift by (scenario − real) because the
+    STL trend+seasonal component is fixed, so z-scores stay correct without rerunning
+    STL. When no override applies, returns plain dicts of the recorded rows.
+    """
+    m = dict(m_row)
+    resid = dict(resid_row)
+    if not _override_matches(override, ts):
+        return m, resid
+    real_load = _f(m.get("total_load_mw", 0.0))
+    real_maxl = _f(m.get("max_line_loading_pct", 0.0))
+    real_slack = _f(m.get("slack_mw", 0.0))
+    m["total_load_mw"] = override.total_load_mw
+    m["total_gen_mw"] = override.total_gen_mw
+    m["max_line_loading_pct"] = override.max_line_loading_pct
+    m["slack_mw"] = override.slack_mw
+    resid["load"] = _f(resid.get("load", 0.0)) + (override.total_load_mw - real_load)
+    resid["max_loading"] = _f(resid.get("max_loading", 0.0)) + (override.max_line_loading_pct - real_maxl)
+    resid["slack"] = _f(resid.get("slack", 0.0)) + (override.slack_mw - real_slack)
+    return m, resid
+
+
 # ---------------------------------------------------------------------------
 # interesting_days — the only range tool
 # ---------------------------------------------------------------------------
@@ -131,12 +160,13 @@ def interesting_days(
 # ---------------------------------------------------------------------------
 
 def _stressed_branches(
-    gs: GridStatsBundle, ts: pd.Timestamp, limit: int | None = None
+    gs: GridStatsBundle, ts: pd.Timestamp, limit: int | None = None, override=None
 ) -> list[dict]:
     """Branches at/above their p90 (for this hour×workday) at ``ts``.
 
-    Loadings come from ``gs.branch_loadings``; thresholds from the percentile table.
-    Sorted by loading desc. ``limit`` caps the count (None = all).
+    Loadings come from ``gs.branch_loadings`` (or the scenario override, when a
+    simulation is active); thresholds from the percentile table. Sorted by loading
+    desc. ``limit`` caps the count (None = all).
     """
     hour = ts.hour
     is_workday = int(ts.weekday() < 5)
@@ -149,7 +179,7 @@ def _stressed_branches(
     pct95_row = gs.branch_pct95.loc[key]
     pct99_row = gs.branch_pct99.loc[key]
 
-    row = _nearest_row(gs.branch_loadings, ts)
+    row = override.branch_loadings if _override_matches(override, ts) else _nearest_row(gs.branch_loadings, ts)
     actual_loadings: dict[str, float] = {}
     for branch_name, val in row.items():
         if val is None or (isinstance(val, float) and math.isnan(val)):
@@ -181,25 +211,25 @@ def _stressed_branches(
 # explain_hour — lightweight single hour
 # ---------------------------------------------------------------------------
 
-def explain_hour(gs: GridStatsBundle, timestamp: str) -> dict:
+def explain_hour(gs: GridStatsBundle, timestamp: str, override=None) -> dict:
     """Compact LLM context for a single hour.
 
     System metrics + STL z-scores (slack shown but not ranked), de-biased
     plan-deviation σ per metric, top-3 stressed branches (vs p90), 1h momentum,
-    and a ``summary_text`` line. Branch loadings come from the bundle.
+    and a ``summary_text`` line. Branch loadings come from the bundle, or from the
+    scenario ``override`` when a failure simulation is active for this hour.
     """
     ts = pd.Timestamp(timestamp)
     err = _out_of_range(gs, ts)
     if err is not None:
         return err
 
-    row = _nearest_row(gs.residuals, ts)
+    m, row = _apply_metric_override(_nearest_row(gs.metrics, ts), _nearest_row(gs.residuals, ts), override, ts)
     z = {}
     for col in gs.residuals.columns:
         std = gs.residual_std.get(col, 1.0) or 1.0
         z[f"z_{col}"] = round(_f(row[col]) / std, 2)
 
-    m = _nearest_row(gs.metrics, ts)
     system = {
         "total_load_mw":        round(_f(m["total_load_mw"]), 1),
         "total_gen_mw":         round(_f(m["total_gen_mw"]), 1),
@@ -208,7 +238,7 @@ def explain_hour(gs: GridStatsBundle, timestamp: str) -> dict:
         **z,
     }
 
-    fc_deltas = _forecast_deltas(gs, ts)
+    fc_deltas = _forecast_deltas(gs, ts, override)
 
     # --- momentum (1h) ---
     momentum: dict = {}
@@ -222,7 +252,7 @@ def explain_hour(gs: GridStatsBundle, timestamp: str) -> dict:
             _f(m["max_line_loading_pct"]) - _f(pm["max_line_loading_pct"]), 1
         )
 
-    top_branches = _stressed_branches(gs, ts, limit=3)
+    top_branches = _stressed_branches(gs, ts, limit=3, override=override)
 
     # --- summary text ---
     lines = [f"[{ts.isoformat()}]"]
@@ -257,23 +287,31 @@ def explain_hour(gs: GridStatsBundle, timestamp: str) -> dict:
     }
 
 
-def _forecast_deltas(gs: GridStatsBundle, ts: pd.Timestamp) -> dict:
-    """Per-metric forecast/actual/delta + de-biased surprise_z at ``ts``."""
+def _forecast_deltas(gs: GridStatsBundle, ts: pd.Timestamp, override=None) -> dict:
+    """Per-metric forecast/actual/delta + de-biased surprise_z at ``ts``.
+
+    When a scenario ``override`` applies, the LOAD actual is replaced with the
+    simulated load (forecast is unchanged, so surprise_z reflects the failure);
+    solar/wind stay on real actuals."""
     out: dict = {}
     if ts not in gs.forecast.index or ts not in gs.realtime.index:
         return out
     fc = gs.forecast.loc[ts]
     rt = gs.realtime.loc[ts]
+    override_actuals: dict[str, float] = (
+        {"load": override.total_load_mw} if _override_matches(override, ts) else {}
+    )
     for metric, fc_col, rt_col in _DELTA_PAIRS:
         if fc_col not in fc.index or rt_col not in rt.index:
             continue
         if pd.isna(fc[fc_col]) or pd.isna(rt[rt_col]):
             continue
-        delta_mw = round(_f(rt[rt_col]) - _f(fc[fc_col]), 1)
+        actual = override_actuals.get(metric, _f(rt[rt_col]))
+        delta_mw = round(actual - _f(fc[fc_col]), 1)
         base = _f(fc[fc_col]) or 1.0
         entry = {
             "forecast_mw": round(_f(fc[fc_col]), 1),
-            "actual_mw":   round(_f(rt[rt_col]), 1),
+            "actual_mw":   round(actual, 1),
             "delta_mw":    delta_mw,
             "delta_pct":   round(100 * delta_mw / abs(base), 1),
         }
@@ -364,11 +402,12 @@ def plan_adherence(gs: GridStatsBundle, day: str) -> dict:
 # loading_context — lightweight single hour
 # ---------------------------------------------------------------------------
 
-def loading_context(gs: GridStatsBundle, timestamp: str, top: int = 5) -> dict:
+def loading_context(gs: GridStatsBundle, timestamp: str, top: int = 5, override=None) -> dict:
     """Top branches by loading at a single hour, each with its normal band.
 
     For each branch: actual loading_percent and the p90/p95/p99 band for this
     hour-of-day × workday stratum, plus an approximate pct_rank within that band.
+    Branch loadings come from the bundle, or the scenario ``override`` when active.
     """
     ts = pd.Timestamp(timestamp)
     err = _out_of_range(gs, ts)
@@ -379,7 +418,7 @@ def loading_context(gs: GridStatsBundle, timestamp: str, top: int = 5) -> dict:
     is_workday = int(ts.weekday() < 5)
     key = (hour, is_workday)
 
-    row = _nearest_row(gs.branch_loadings, ts)
+    row = override.branch_loadings if _override_matches(override, ts) else _nearest_row(gs.branch_loadings, ts)
     loadings: dict[str, float] = {}
     for name, val in row.items():
         if val is None or (isinstance(val, float) and math.isnan(val)):
@@ -433,20 +472,20 @@ def _pct_rank(actual: float, p90, p95, p99) -> int:
 # deep_dive — verbose & expensive single hour
 # ---------------------------------------------------------------------------
 
-def deep_dive(gs: GridStatsBundle, timestamp: str) -> dict:
+def deep_dive(gs: GridStatsBundle, timestamp: str, override=None) -> dict:
     """Exhaustive single-hour breakdown. VERBOSE.
 
     Everything: all system metrics raw + z, full per-metric plan deviation
     (forecast/actual/delta/σ), ALL stressed branches with thresholds + pct_rank,
-    momentum at 1h and 24h, and the day's plan-adherence context.
+    momentum at 1h and 24h, and the day's plan-adherence context. Reflects the
+    scenario ``override`` (current hour) when a failure simulation is active.
     """
     ts = pd.Timestamp(timestamp)
     err = _out_of_range(gs, ts)
     if err is not None:
         return err
 
-    m = _nearest_row(gs.metrics, ts)
-    resid = _nearest_row(gs.residuals, ts)
+    m, resid = _apply_metric_override(_nearest_row(gs.metrics, ts), _nearest_row(gs.residuals, ts), override, ts)
 
     metrics_z: dict = {}
     for col in gs.residuals.columns:
@@ -461,12 +500,12 @@ def deep_dive(gs: GridStatsBundle, timestamp: str) -> dict:
         "total_gen_mw":         round(_f(m["total_gen_mw"]), 1),
         "max_line_loading_pct": round(_f(m["max_line_loading_pct"]), 1),
         "slack_mw":             round(_f(m["slack_mw"]), 1),
-        "n_overloaded_lines":   int(m["n_overloaded_lines"]) if "n_overloaded_lines" in m.index else 0,
-        "converged":            bool(m["converged"]) if "converged" in m.index else True,
+        "n_overloaded_lines":   int(m["n_overloaded_lines"]) if "n_overloaded_lines" in m else 0,
+        "converged":            bool(m["converged"]) if "converged" in m else True,
         "z": metrics_z,
     }
 
-    fc_deltas = _forecast_deltas(gs, ts)
+    fc_deltas = _forecast_deltas(gs, ts, override)
 
     # momentum 1h & 24h
     momentum: dict = {}
@@ -481,7 +520,7 @@ def deep_dive(gs: GridStatsBundle, timestamp: str) -> dict:
                 _f(m["max_line_loading_pct"]) - _f(pm["max_line_loading_pct"]), 1
             )
 
-    all_branches = _stressed_branches(gs, ts, limit=None)
+    all_branches = _stressed_branches(gs, ts, limit=None, override=override)
 
     day_ctx = plan_adherence(gs, ts.normalize().isoformat())
 

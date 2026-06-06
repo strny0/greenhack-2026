@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
-import type { DeviationAssessment, DeviationRecord, Meta, StateFrame } from "./types";
+import type { DeviationAssessment, DeviationRecord, Meta, PresetKey, ScenarioSpec, StateFrame } from "./types";
 import MapView, { Selection } from "./components/MapView";
 import SldView from "./components/SldView";
 import TopBar from "./components/TopBar";
@@ -8,11 +8,23 @@ import Legend from "./components/Legend";
 import DetailPanel from "./components/DetailPanel";
 import Sidebar from "./components/Sidebar";
 import DeviationBanner from "./components/DeviationBanner";
+import SimulationBadge from "./components/SimulationBadge";
+import {
+  clampWindowStart,
+  datasetDayBounds,
+  dayStartIndex,
+  keyToDate,
+  lastDayStart,
+} from "./lib/datetime";
+
+const DAY_FRAMES = 24; // one calendar day per loaded window
 
 export default function App() {
   const [meta, setMeta] = useState<Meta | null>(null);
   const [frames, setFrames] = useState<StateFrame[]>([]);
   const [idx, setIdx] = useState(0);
+  const [windowStart, setWindowStart] = useState<number | null>(null);
+  const [windowLoading, setWindowLoading] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [selected, setSelected] = useState<Selection | null>(null);
   const [highlight, setHighlight] = useState<Set<string>>(new Set());
@@ -22,7 +34,23 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<"map" | "sld">("sld");
   const [progress, setProgress] = useState(0);
+  // Active whole-day failure simulation. When set, the views render the scenario
+  // frames; the base frames are kept so the overlay can show the delta vs normal.
+  const [simulation, setSimulation] = useState<{
+    spec: ScenarioSpec;
+    baseFrames: StateFrame[];
+    scenarioFrames: StateFrame[];
+  } | null>(null);
+  const [simLoading, setSimLoading] = useState(false);
+  const [simError, setSimError] = useState<string | null>(null);
   const timer = useRef<number | null>(null);
+  // The first window load shows the full-screen progress bar and jumps to the
+  // evening peak; later loads (a date change) keep the old frames on screen.
+  const initialLoad = useRef(true);
+  // Loaded day-windows, keyed by start index. Stepping to a day we've already
+  // seen (or prefetched) is instant. Bounded so we don't hoard a whole year.
+  const windowCache = useRef<Map<number, StateFrame[]>>(new Map());
+  const inFlight = useRef<Set<number>>(new Set());
 
   // --- continuous deviation evaluation -------------------------------------
   // Whole-year deterministic risk timeline, loaded once and indexed by timestamp.
@@ -36,23 +64,14 @@ export default function App() {
   const [dismissedTs, setDismissedTs] = useState<string | null>(null);
   const [openChatNonce, setOpenChatNonce] = useState(0);
 
-  // load meta + initial window
+  // load meta, then point at the default day (its window load is the effect below)
   useEffect(() => {
     (async () => {
       try {
         const m = await api.meta();
         setMeta(m);
-        // meta is in; reserve a sliver of the bar for it, then stream the window
         setProgress(0.04);
-        const w = await api.windowProgress(
-          m.default_window.start,
-          m.default_window.count,
-          (f) => setProgress(0.04 + f * 0.96),
-        );
-        setFrames(w);
-        // start at an interesting hour (evening peak ~18:00) if present
-        const peak = w.findIndex((f) => f.timestamp.endsWith("T18:00:00"));
-        setIdx(peak >= 0 ? peak : 0);
+        setWindowStart(clampWindowStart(m.default_window.start, m.count));
       } catch (e: any) {
         setError(String(e));
       }
@@ -72,6 +91,83 @@ export default function App() {
     })();
   }, []);
 
+  // load the 24h window whenever the selected day changes
+  useEffect(() => {
+    if (!meta || windowStart == null) return;
+    let cancelled = false;
+    const isInitial = initialLoad.current;
+    const total = meta.count;
+    const CACHE_CAP = 24; // ~24 days of frames kept in memory
+
+    const cacheSet = (start: number, w: StateFrame[]) => {
+      const c = windowCache.current;
+      c.delete(start);
+      c.set(start, w); // (re)insert as most-recent
+      while (c.size > CACHE_CAP) c.delete(c.keys().next().value as number);
+    };
+
+    // Warm the previous/next day in the background so left/right stepping is
+    // instant (also warms the backend's per-frame LRU).
+    const prefetchNeighbors = (start: number) => {
+      for (const s of [start - DAY_FRAMES, start + DAY_FRAMES]) {
+        if (s < 0 || s > lastDayStart(total)) continue;
+        if (windowCache.current.has(s) || inFlight.current.has(s)) continue;
+        inFlight.current.add(s);
+        api
+          .window(s, DAY_FRAMES)
+          .then((w) => cacheSet(s, w))
+          .catch(() => {})
+          .finally(() => inFlight.current.delete(s));
+      }
+    };
+
+    const apply = (w: StateFrame[]) => {
+      setFrames(w);
+      if (isInitial) {
+        // start at an interesting hour (evening peak ~18:00) if present
+        const peak = w.findIndex((f) => f.timestamp.endsWith("T18:00:00"));
+        setIdx(peak >= 0 ? peak : 0);
+        initialLoad.current = false;
+      } else {
+        // aligned 24h days -> keeping idx keeps the same hour-of-day
+        setIdx((i) => Math.min(i, Math.max(0, w.length - 1)));
+      }
+      prefetchNeighbors(windowStart);
+    };
+
+    if (!isInitial) setPlaying(false);
+
+    const cached = windowCache.current.get(windowStart);
+    if (cached) {
+      setWindowLoading(false);
+      apply(cached);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setWindowLoading(true);
+    (async () => {
+      try {
+        const w = await api.windowProgress(
+          windowStart,
+          DAY_FRAMES,
+          isInitial ? (f) => setProgress(0.04 + f * 0.96) : undefined,
+        );
+        if (cancelled) return;
+        cacheSet(windowStart, w);
+        apply(w);
+      } catch (e: any) {
+        if (!cancelled) setError(String(e));
+      } finally {
+        if (!cancelled) setWindowLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [meta, windowStart]);
+
   // playback loop
   useEffect(() => {
     if (playing && frames.length) {
@@ -84,7 +180,11 @@ export default function App() {
     };
   }, [playing, frames.length]);
 
-  const frame = frames[idx] ?? null;
+  // What the views render: scenario frames when a simulation is active, else the
+  // real loaded window. `baseFrame` (the un-failed hour) feeds the delta overlay.
+  const renderFrames = simulation ? simulation.scenarioFrames : frames;
+  const frame = renderFrames[idx] ?? null;
+  const baseFrame = simulation ? simulation.baseFrames[idx] ?? null : null;
   const windowStartTs = frames[0]?.timestamp ?? "";
 
   // Live deterministic tier for the current hour (free lookup, updates every frame).
@@ -135,6 +235,71 @@ export default function App() {
     };
   }, [settledTs, devByTs]);
 
+  const total = meta?.count ?? 0;
+  // Day changes are bound to the loaded day, so they exit any active simulation.
+  const selectDate = (date: Date) => {
+    if (!meta) return;
+    setSimulation(null);
+    setWindowStart(clampWindowStart(dayStartIndex(meta.timestamps, date), total));
+  };
+  // Bookmarks point at a *moment*, not just a day: jump to the day and land on
+  // noon (hour 12 of the aligned 24h window) regardless of the hour we were on.
+  const selectBookmark = (date: Date) => {
+    if (!meta) return;
+    setSimulation(null);
+    setWindowStart(clampWindowStart(dayStartIndex(meta.timestamps, date), total));
+    setIdx(12);
+  };
+  const stepDay = (delta: -1 | 1) => {
+    setSimulation(null);
+    setWindowStart((s) => (s == null ? s : clampWindowStart(s + delta * DAY_FRAMES, total)));
+  };
+
+  // Apply a failure preset to the whole loaded day: fetch the 24h scenario window,
+  // keep the current frames as the base for delta overlays, and render the scenario.
+  const activateSim = async (preset: PresetKey) => {
+    if (windowStart == null || !frames.length) return;
+    const base = frames;
+    setSimError(null);
+    setSimLoading(true);
+    try {
+      const r = await api.whatifWindow(windowStart, DAY_FRAMES, preset);
+      setSimulation({ spec: r.scenario, baseFrames: base, scenarioFrames: r.frames });
+      setPlaying(false);
+    } catch (e: any) {
+      setSimError(String(e?.message ?? e));
+    } finally {
+      setSimLoading(false);
+    }
+  };
+  const exitSim = () => {
+    setSimulation(null);
+    setSimError(null);
+  };
+
+  // The viewed snapshot timestamp, read straight from `meta` (selected day +
+  // hour-of-day). Unlike `frame.timestamp` this updates the instant the day
+  // changes — before the window's grid data finishes loading — so the agent's
+  // context never lags behind a jump to an uncached day (e.g. via a bookmark).
+  const currentTs =
+    meta && windowStart != null
+      ? meta.timestamps[Math.min(windowStart + idx, total - 1)] ?? ""
+      : "";
+
+  const selectedDate = useMemo(
+    () =>
+      meta && windowStart != null
+        ? keyToDate(meta.timestamps[windowStart].slice(0, 10))
+        : new Date(),
+    [meta, windowStart],
+  );
+  const dayBounds = useMemo(
+    () => (meta ? datasetDayBounds(meta.timestamps) : { first: new Date(), last: new Date() }),
+    [meta],
+  );
+  const canPrev = windowStart != null && windowStart > 0;
+  const canNext = windowStart != null && windowStart < lastDayStart(total);
+
   const focus = (ids: string[]) => setHighlight(new Set(ids));
   const clearFocus = () => setHighlight(new Set());
   const zoom = (kind: "node" | "line", id: string) =>
@@ -165,6 +330,15 @@ export default function App() {
   const selectedLine = useMemo(
     () => (selected?.kind === "line" ? frame?.lines.find((l) => l.id === selected.id) ?? null : null),
     [selected, frame],
+  );
+  // Pre-failure values for the selected element, so DetailPanel can show the delta.
+  const baseNode = useMemo(
+    () => (selected?.kind === "node" ? baseFrame?.nodes.find((n) => n.id === selected.id) ?? null : null),
+    [selected, baseFrame],
+  );
+  const baseLine = useMemo(
+    () => (selected?.kind === "line" ? baseFrame?.lines.find((l) => l.id === selected.id) ?? null : null),
+    [selected, baseFrame],
   );
 
   if (error)
@@ -202,7 +376,7 @@ export default function App() {
     <div className="flex h-[100dvh] flex-col bg-background text-foreground">
       <TopBar
         frame={frame}
-        frames={frames}
+        frames={renderFrames}
         idx={idx}
         setIdx={(i) => {
           setPlaying(false);
@@ -214,7 +388,23 @@ export default function App() {
         onModeChange={setMode}
         meta={meta}
         devByTs={devByTs}
+        selectedDate={selectedDate}
+        dayBounds={dayBounds}
+        windowLoading={windowLoading}
+        canPrev={canPrev && !windowLoading}
+        canNext={canNext && !windowLoading}
+        onSelectDate={selectDate}
+        onSelectBookmark={selectBookmark}
+        onStepDay={stepDay}
       />
+      {simulation && (
+        <SimulationBadge
+          spec={simulation.spec}
+          frames={simulation.scenarioFrames}
+          frame={frame}
+          onExit={exitSim}
+        />
+      )}
       {/* Mobile: stack the map above a collapsible chat/sidebar sheet.
           Desktop (md+): map left, resizable sidebar on the right. */}
       <div className="relative flex min-h-0 flex-1 flex-col md:flex-row">
@@ -227,6 +417,8 @@ export default function App() {
               selected={selected}
               onSelect={setSelected}
               zoomTo={zoomTo}
+              baseFrame={baseFrame}
+              simulating={!!simulation}
             />
           ) : (
             <SldView
@@ -236,9 +428,11 @@ export default function App() {
               selected={selected}
               onSelect={setSelected}
               zoomTo={zoomTo}
+              baseFrame={baseFrame}
+              simulating={!!simulation}
             />
           )}
-          <Legend />
+          <Legend showBusIcons={mode === "map"} />
           {showBanner && dev && (
             <DeviationBanner
               dev={dev}
@@ -252,15 +446,19 @@ export default function App() {
             <DetailPanel
               node={selectedNode}
               line={selectedLine}
+              baseNode={baseNode}
+              baseLine={baseLine}
               windowStartTs={windowStartTs}
-              windowCount={frames.length}
+              windowCount={renderFrames.length}
               onClose={() => setSelected(null)}
+              onGoTo={zoom}
             />
           )}
         </div>
         <Sidebar
           frame={frame}
           meta={meta}
+          agentTimestamp={currentTs}
           selected={selected}
           onFocus={focus}
           onClearFocus={clearFocus}
@@ -270,6 +468,11 @@ export default function App() {
           triage={triage}
           onExplain={explainDeviation}
           openChatNonce={openChatNonce}
+          simulation={simulation ? { spec: simulation.spec } : null}
+          simLoading={simLoading}
+          simError={simError}
+          onActivateSim={activateSim}
+          onExitSim={exitSim}
         />
       </div>
     </div>

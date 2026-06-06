@@ -8,6 +8,9 @@ import {
   STATE_STROKE_COLOR,
 } from "./styling";
 import type { Selection } from "./MapView";
+import { formatGenTypes, labelOf, NODE_KIND_LABEL } from "@/lib/gridmeta";
+import { lineDeltas, nodeDeltas } from "@/lib/simdelta";
+import { OUT_OF_SERVICE_COLOR } from "./styling";
 
 // Classic SLD palette — single dark color for all bus bars; equipment type is
 // communicated by the attached symbol (G in circle for generators, ↓ for loads,
@@ -24,6 +27,9 @@ interface Props {
   onSelect: (s: Selection | null) => void;
   /** A "frame the camera here" request; the nonce re-triggers repeated jumps. */
   zoomTo: { kind: "node" | "line"; id: string; nonce: number } | null;
+  /** Pre-failure frame for the delta overlay; null when not simulating. */
+  baseFrame?: StateFrame | null;
+  simulating?: boolean;
 }
 
 // SVG y grows down. The dataset y range is negative; smaller (more-negative)
@@ -157,9 +163,20 @@ function routePath(
 
 type Tooltip = { x: number; y: number; html: string } | null;
 
-export default function SldView({ frame, meta, highlight, selected, onSelect, zoomTo }: Props) {
+export default function SldView({ frame, meta, highlight, selected, onSelect, zoomTo, baseFrame, simulating }: Props) {
   const bbox = meta.sld_bbox;
   const coords = meta.sld_coords;
+
+  // Delta vs the pre-failure frame (simulation overlay): which branches jumped,
+  // which tripped, and which buses got worse. Empty when not simulating.
+  const ld = useMemo(
+    () => (simulating && baseFrame ? lineDeltas(baseFrame, frame) : null),
+    [simulating, baseFrame, frame],
+  );
+  const nd = useMemo(
+    () => (simulating && baseFrame ? nodeDeltas(baseFrame, frame) : null),
+    [simulating, baseFrame, frame],
+  );
 
   const layout = useMemo(
     () => buildLayout(frame.nodes, frame.lines, coords),
@@ -361,9 +378,12 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
   };
 
   const lineTip = (l: GridLine) =>
-    `<b>${l.name}</b><br/>${l.loading_pct == null || l.loading_pct < 0 ? "out of service" : Math.round(l.loading_pct) + "% loaded"}`;
-  const nodeTip = (n: GridNode) =>
-    `<b>${n.name}</b><br/>${n.type} · ${(n.vm_pu ?? 0).toFixed(3)} p.u.`;
+    `<b>${labelOf(l)}</b><br/>${l.loading_pct == null || l.loading_pct < 0 ? "out of service" : Math.round(l.loading_pct) + "% loaded"}`;
+  const nodeTip = (n: GridNode) => {
+    const role = n.is_slack ? "Slack bus" : NODE_KIND_LABEL[n.type];
+    const gens = formatGenTypes(n.gen_types);
+    return `<b>${labelOf(n)}</b><br/>${role}${gens ? ` · ${gens}` : ""} · ${(n.vm_pu ?? 0).toFixed(3)} p.u.`;
+  };
 
   const selectedLineGeom =
     selected?.kind === "line" ? branchGeom.find((g) => g?.l.id === selected.id) ?? null : null;
@@ -458,6 +478,29 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
           })}
         </g>
 
+        {/* simulation overlay — pulsing hot underlay beneath branches that jumped */}
+        {ld && (
+          <g style={{ pointerEvents: "none" }}>
+            {branchGeom.map((g) => {
+              if (!g) return null;
+              const d = ld[g.l.id];
+              if (!d || (!d.mover && !d.tripped)) return null;
+              return (
+                <path
+                  key={`sim-${g.l.id}`}
+                  className="sim-pulse"
+                  d={g.d}
+                  fill="none"
+                  stroke={d.tripped ? OUT_OF_SERVICE_COLOR : "#ff1f1f"}
+                  strokeWidth={lineWidth(g.l.loading_pct, g.l.kind) + 14}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              );
+            })}
+          </g>
+        )}
+
         {/* branches — colored by loading, orthogonal routed */}
         <g>
           {branchGeom.map((g) => {
@@ -544,6 +587,32 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
             );
           })}
         </g>
+
+        {/* simulation overlay — pulsing halo under buses whose state worsened */}
+        {nd && (
+          <g style={{ pointerEvents: "none" }}>
+            {frame.nodes.map((n) => {
+              if (!nd[n.id]?.worsened) return null;
+              const c = coords[n.id];
+              if (!c) return null;
+              const len = layout.barLength(n.id);
+              const sy = screenY(c[1]);
+              return (
+                <line
+                  key={`sim-n-${n.id}`}
+                  className="sim-pulse"
+                  x1={c[0] - len / 2}
+                  y1={sy}
+                  x2={c[0] + len / 2}
+                  y2={sy}
+                  stroke="#ff1f1f"
+                  strokeWidth={BAR_THICKNESS + 18}
+                  strokeLinecap="round"
+                />
+              );
+            })}
+          </g>
+        )}
 
         {/* transformer glyph — two overlapping circles at the branch midpoint */}
         <g>

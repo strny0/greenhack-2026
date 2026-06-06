@@ -47,7 +47,7 @@ def interesting_days(start_date: str, end_date: str, n: int = 10) -> list[dict]:
     return _records(df)
 
 
-def explain_hour(timestamp: str) -> dict:
+def explain_hour(timestamp: str, override=None) -> dict:
     """Explain what was unusual on the grid at a single hour (lightweight).
 
     Returns system metrics with anomaly z-scores, the de-biased plan deviation
@@ -57,8 +57,9 @@ def explain_hour(timestamp: str) -> dict:
 
     Args:
         timestamp: ISO hour, e.g. "2024-09-13T18:00:00".
+        override: optional scenario actuals (failure simulation) for this hour.
     """
-    return _gs().explain_hour(timestamp)
+    return _gs().explain_hour(timestamp, override=override)
 
 
 def plan_adherence(day: str) -> dict:
@@ -74,7 +75,7 @@ def plan_adherence(day: str) -> dict:
     return _gs().plan_adherence(day)
 
 
-def loading_context(timestamp: str, top: int = 5) -> dict:
+def loading_context(timestamp: str, top: int = 5, override=None) -> dict:
     """Show the most-loaded branches at an hour vs their normal band (lightweight).
 
     Returns the top branches by loading at the given hour, each with its p90/p95/p99
@@ -85,10 +86,10 @@ def loading_context(timestamp: str, top: int = 5) -> dict:
         timestamp: ISO hour, e.g. "2024-09-13T18:00:00".
         top:       number of branches to return (default 5).
     """
-    return _gs().loading_context(timestamp, top)
+    return _gs().loading_context(timestamp, top, override=override)
 
 
-def deep_dive(timestamp: str) -> dict:
+def deep_dive(timestamp: str, override=None) -> dict:
     """Exhaustive single-hour breakdown — VERBOSE & EXPENSIVE context.
 
     Only call when the operator explicitly asks for an in-depth breakdown; the
@@ -99,7 +100,7 @@ def deep_dive(timestamp: str) -> dict:
     Args:
         timestamp: ISO hour, e.g. "2024-09-13T18:00:00".
     """
-    return _gs().deep_dive(timestamp)
+    return _gs().deep_dive(timestamp, override=override)
 
 
 def _records(df) -> list[dict]:

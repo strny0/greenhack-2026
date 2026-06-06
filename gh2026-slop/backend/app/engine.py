@@ -23,6 +23,7 @@ from .model import (  # noqa: E402
     FrameSummary,
     Line,
     Node,
+    ScenarioSpec,
     State,
     StateFrame,
     WhatIfRequest,
@@ -157,6 +158,7 @@ def extract_frame(net, timestamp: str, converged: bool) -> StateFrame:
                 is_slack=is_slack,
                 min_vm_pu=lo,
                 max_vm_pu=hi,
+                gen_types=store.bus_gen_types.get(bus_name, []) if idx in gen_by_bus else [],
                 vm_pu=round(vm, 4) if vm is not None else None,
                 vm_kv=round(vm * vn, 2) if vm is not None else None,
                 va_degree=round(va, 2) if va is not None else None,
@@ -793,21 +795,21 @@ def assess_deviation(timestamp: str) -> dict:
 
 # --- what-if scenarios -------------------------------------------------------
 
+LOAD_SURGE_SCALE = 1.5  # global load multiplier for the "load surge" preset
 
-def run_whatif(req: WhatIfRequest) -> WhatIfResponse:
-    ts = store.nearest_timestamp(req.timestamp)
-    base = base_frame(ts)
 
-    net = store.read_net(ts)
+def _apply_scenario(net, disconnect_lines, trip_nodes, load_scale) -> None:
+    """Mutate a pandapower net in place: take lines out of service, trip buses
+    (drop their gens/loads), and/or scale all load. Shared by run_whatif and the
+    whole-day simulation path so both behave identically."""
     name_to_line_idx = {str(r["name"]): idx for idx, r in net.line.iterrows()}
-
-    for lid in req.disconnect_lines:
+    for lid in disconnect_lines:
         if lid in name_to_line_idx:
             net.line.at[name_to_line_idx[lid], "in_service"] = False
 
-    if req.trip_nodes:
+    if trip_nodes:
         bus_idx_by_name = {str(r["name"]): idx for idx, r in net.bus.iterrows()}
-        trip_bus_idx = {bus_idx_by_name[n] for n in req.trip_nodes if n in bus_idx_by_name}
+        trip_bus_idx = {bus_idx_by_name[n] for n in trip_nodes if n in bus_idx_by_name}
         for idx, r in net.gen.iterrows():
             if int(r["bus"]) in trip_bus_idx:
                 net.gen.at[idx, "in_service"] = False
@@ -815,9 +817,75 @@ def run_whatif(req: WhatIfRequest) -> WhatIfResponse:
             if int(r["bus"]) in trip_bus_idx:
                 net.load.at[idx, "in_service"] = False
 
-    if req.load_scale != 1.0:
-        net.load["p_mw"] = net.load["p_mw"] * req.load_scale
-        net.load["q_mvar"] = net.load["q_mvar"] * req.load_scale
+    if load_scale != 1.0:
+        net.load["p_mw"] = net.load["p_mw"] * load_scale
+        net.load["q_mvar"] = net.load["q_mvar"] * load_scale
+
+
+def scenario_frame(timestamp: str, spec: ScenarioSpec) -> StateFrame:
+    """Solved canonical frame for a snapshot with a scenario applied (not cached)."""
+    ts = store.nearest_timestamp(timestamp)
+    net = store.read_net(ts)
+    _apply_scenario(net, spec.disconnect_lines, spec.trip_nodes, spec.load_scale)
+    converged = _solve(net)
+    return extract_frame(net, ts, converged)
+
+
+def resolve_preset(preset: str, timestamp: str) -> ScenarioSpec:
+    """Turn a preset key into a concrete ScenarioSpec, picking the target element
+    (the most-loaded line / largest generator) from the base frame at this hour."""
+    ts = store.nearest_timestamp(timestamp)
+    base = base_frame(ts)
+    if preset == "trip_most_loaded_line":
+        cand = [l for l in base.lines if l.in_service and l.loading_pct is not None]
+        if not cand:
+            return ScenarioSpec(preset=preset, feasible=False, reason="No in-service line to trip.")
+        line = max(cand, key=lambda l: l.loading_pct)
+        return ScenarioSpec(
+            preset=preset,
+            label=f"Tripped line {line.label or line.name} (was {round(line.loading_pct)}% loaded)",
+            disconnect_lines=[line.id],
+            resolved=[line.id],
+        )
+    if preset == "trip_largest_generator":
+        cand = [n for n in base.nodes if n.production_mw > 0]
+        if not cand:
+            return ScenarioSpec(preset=preset, feasible=False, reason="No online generation to trip.")
+        bus = max(cand, key=lambda n: n.production_mw)
+        return ScenarioSpec(
+            preset=preset,
+            label=f"Tripped generation at {bus.label or bus.name} ({round(bus.production_mw)} MW offline)",
+            trip_nodes=[bus.id],
+            resolved=[bus.id],
+        )
+    if preset == "load_surge":
+        return ScenarioSpec(
+            preset=preset,
+            label=f"Load surge +{round((LOAD_SURGE_SCALE - 1) * 100)}% across all buses",
+            load_scale=LOAD_SURGE_SCALE,
+        )
+    return ScenarioSpec(preset=preset, feasible=False, reason=f"Unknown preset '{preset}'.")
+
+
+def whatif_window(start: int, count: int, preset: str) -> tuple[ScenarioSpec, list[StateFrame]]:
+    """Resolve a preset once at the window's first hour (fixed for the whole day),
+    then solve a scenario frame for each of `count` hours. Returns (spec, frames)."""
+    tss = store.timestamps[start : start + count]
+    if not tss:
+        return ScenarioSpec(preset=preset, feasible=False, reason="Empty window."), []
+    spec = resolve_preset(preset, tss[0])
+    if not spec.feasible:
+        return spec, []
+    frames = [scenario_frame(ts, spec) for ts in tss]
+    return spec, frames
+
+
+def run_whatif(req: WhatIfRequest) -> WhatIfResponse:
+    ts = store.nearest_timestamp(req.timestamp)
+    base = base_frame(ts)
+
+    net = store.read_net(ts)
+    _apply_scenario(net, req.disconnect_lines, req.trip_nodes, req.load_scale)
 
     converged = _solve(net)
     scenario = extract_frame(net, ts, converged)
