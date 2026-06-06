@@ -12,6 +12,7 @@ NodeType = Literal["generation", "load", "substation", "slack"]
 class Node(BaseModel):
     id: str
     name: str
+    label: str = ""
     type: NodeType
     zone: str
     lat: float
@@ -36,6 +37,7 @@ class Node(BaseModel):
 class Line(BaseModel):
     id: str
     name: str
+    label: str = ""
     from_node: str
     to_node: str
     kind: Literal["line", "trafo"] = "line"

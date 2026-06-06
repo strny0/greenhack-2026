@@ -46,6 +46,8 @@ class DataStore:
         self.bus_renewable: dict[str, dict] = {}  # bus_name -> {solar_mw, wind_mw}
         self.gen_to_bus: dict[str, str] = {}  # gen_name -> bus_name (deviation join)
         self.bus_to_region: dict[str, str] = {}  # bus_name -> region (load join)
+        self.bus_labels: dict[str, str] = {}
+        self.branch_labels: dict[str, str] = {}
         self._discover()
         self._init_projector()
         self._init_static()
@@ -73,8 +75,25 @@ class DataStore:
         geo = net.bus_geodata
         bus = net.bus
 
+        # Load coordinates from bus_coordinates.csv:
+        # - real_lat/real_lon: matched to real California power plants (EIA/CEC data) — generator buses only
+        # - de_lat/de_lon: RWTH Aachen IEEE-118 georeferencing projected into California regions — all buses
+        bus_real_coords: dict[str, tuple[float, float]] = {}  # lon, lat
+        bus_de_coords: dict[str, tuple[float, float]] = {}
+        coords_csv = config.OVERRIDES_DIR / "bus_coordinates.csv"
+        if coords_csv.exists():
+            df_coords = pd.read_csv(coords_csv)
+            for _, r in df_coords.iterrows():
+                name = str(r["bus_name"])
+                if "real_lat" in df_coords.columns and pd.notna(r.get("real_lat")):
+                    bus_real_coords[name] = (float(r["real_lon"]), float(r["real_lat"]))
+                if "de_lat" in df_coords.columns and pd.notna(r.get("de_lat")):
+                    # Treat (de_lon, de_lat) as (x, y) so East=right, North=up
+                    bus_de_coords[name] = (float(r["de_lon"]), float(r["de_lat"]))
+
         # Group bus geodata by region (pandapower stores it on net.bus.zone).
         per_region_xy: dict[str, list[tuple[float, float]]] = {}
+        per_region_de: dict[str, list[tuple[float, float]]] = {}
         bus_region: dict[str, str] = {}
         for idx, row in bus.iterrows():
             x = float(geo.at[idx, "x"])
@@ -83,21 +102,34 @@ class DataStore:
             region = str(row.get("zone", "")) or "r1"
             bus_region[name] = region
             per_region_xy.setdefault(region, []).append((x, y))
+            if name in bus_de_coords:
+                per_region_de.setdefault(region, []).append(bus_de_coords[name])
 
+        # SLD projector always uses schematic x/y so the SLD bbox is correct.
         self._projector = GeoProjector(per_region_xy)
 
-        # cache bus_name -> (lon, lat) using the region's sub-projection
+        # Fallback projector for non-generator buses: German topology projection.
+        geo_projector = GeoProjector(per_region_de) if per_region_de else self._projector
+
+        # Cache bus_name -> (lon, lat) for map view and (x, y) for SLD view.
+        # Priority: real CEC/EIA plant location > German projection > schematic projection.
         for idx, row in bus.iterrows():
             name = str(row["name"])
+            region = bus_region[name]
             x = float(geo.at[idx, "x"])
             y = float(geo.at[idx, "y"])
-            lon, lat = self._projector.to_lonlat(bus_region[name], x, y)
+            if name in bus_real_coords:
+                lon, lat = bus_real_coords[name]
+            elif name in bus_de_coords:
+                lon, lat = geo_projector.to_lonlat(region, *bus_de_coords[name])
+            else:
+                lon, lat = self._projector.to_lonlat(region, x, y)
             self.bus_lonlat[name] = (round(lon, 5), round(lat, 5))
             self.bus_sld[name] = (round(x, 2), round(y, 2))
 
     def _init_static(self) -> None:
-        """Aggregate solar/wind capacity per bus and build the gen->bus / bus->region
-        join tables used by forecast-vs-actual attribution (from static CSVs)."""
+        """Aggregate solar/wind capacity per bus; build gen->bus / bus->region join
+        tables for forecast attribution; load display labels from overrides."""
         gens_csv = config.STATIC_DIR / "gens.csv"
         if gens_csv.exists():
             df = pd.read_csv(gens_csv)
@@ -122,6 +154,18 @@ class DataStore:
                 region = str(r.get("region", ""))
                 if bus and region:
                     self.bus_to_region[bus] = region
+
+        bus_labels_csv = config.OVERRIDES_DIR / "bus_labels.csv"
+        if bus_labels_csv.exists():
+            df_bl = pd.read_csv(bus_labels_csv)
+            for _, r in df_bl.iterrows():
+                self.bus_labels[str(r["bus_name"])] = str(r["display_name"])
+
+        branch_labels_csv = config.OVERRIDES_DIR / "branch_labels.csv"
+        if branch_labels_csv.exists():
+            df_brl = pd.read_csv(branch_labels_csv)
+            for _, r in df_brl.iterrows():
+                self.branch_labels[str(r["branch_name"])] = str(r["display_name"])
 
     # --- accessors -----------------------------------------------------------
     @property

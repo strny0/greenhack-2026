@@ -90,7 +90,9 @@ def extract_frame(net, timestamp: str, converged: bool) -> StateFrame:
     """Build the canonical StateFrame from an (already solved) pandapower net."""
     bus = net.bus
     name_by_idx = bus["name"].to_dict()
-    proj = store.projector
+    bus_lonlat = store.bus_lonlat
+    bus_labels = store.bus_labels
+    branch_labels = store.branch_labels
 
     # aggregate generation / load per bus index
     gen_p = (
@@ -140,15 +142,13 @@ def extract_frame(net, timestamp: str, converged: bool) -> StateFrame:
         cons = load_by_bus.get(idx, 0.0)
         is_slack = idx in slack_buses
         lo, hi = float(row["min_vm_pu"]), float(row["max_vm_pu"])
-        lon, lat = proj.to_lonlat(
-            str(row.get("zone", "")),
-            float(net.bus_geodata.at[idx, "x"]),
-            float(net.bus_geodata.at[idx, "y"]),
-        )
+        bus_name = str(row["name"])
+        lon, lat = bus_lonlat.get(bus_name, (0.0, 0.0))
         nodes.append(
             Node(
-                id=str(row["name"]),
-                name=str(row["name"]),
+                id=bus_name,
+                name=bus_name,
+                label=bus_labels.get(bus_name, bus_name),
                 type=_node_type(idx in gen_by_bus, idx in load_by_bus, is_slack),
                 zone=str(row.get("zone", "")),
                 lat=round(lat, 5),
@@ -192,10 +192,12 @@ def extract_frame(net, timestamp: str, converged: bool) -> StateFrame:
             else None
         )
         in_svc = bool(row["in_service"])
+        line_name = str(row["name"])
         lines.append(
             Line(
-                id=str(row["name"]),
-                name=str(row["name"]),
+                id=line_name,
+                name=line_name,
+                label=branch_labels.get(line_name, line_name),
                 from_node=name_by_idx[int(row["from_bus"])],
                 to_node=name_by_idx[int(row["to_bus"])],
                 kind="line",
@@ -227,6 +229,7 @@ def extract_frame(net, timestamp: str, converged: bool) -> StateFrame:
             Line(
                 id=nm,
                 name=nm,
+                label=branch_labels.get(nm, nm),
                 from_node=name_by_idx[int(row["hv_bus"])],
                 to_node=name_by_idx[int(row["lv_bus"])],
                 kind="trafo",

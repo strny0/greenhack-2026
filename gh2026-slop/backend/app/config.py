@@ -28,6 +28,9 @@ REALTIME_DIR = DATA_DIR / "realtime"
 FORECASTS_DA_SOLAR = FORECASTS_DIR / "DA" / "Solar"  # Solar1..75DA.csv -> solar_001..
 FORECASTS_DA_WIND = FORECASTS_DIR / "DA" / "Wind"    # Wind1..17DA.csv  -> wind_001..
 FORECASTS_DA_LOAD = FORECASTS_DIR / "DA" / "Load"    # LoadR1..3DA.csv  -> region r1..r3
+# Operator overrides (georef CSVs, labels, etc.) live alongside the dataset,
+# not inside it, so they survive dataset updates without being overwritten.
+OVERRIDES_DIR = DATA_DIR.parent / "overrides"
 
 # --- Frame cache / playback window ------------------------------------------
 # How many hourly frames to precompute at startup (the default "pulse" window).
