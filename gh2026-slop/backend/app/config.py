@@ -94,3 +94,14 @@ AI_MODEL = os.getenv("AI_MODEL", "anthropic/claude-sonnet-4.5")
 
 # --- Weather (Open-Meteo, no key) -------------------------------------------
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
+
+# --- Chat tracing (server-side usage log) -----------------------------------
+# Every dispatcher-agent turn in the deployment is appended to a JSONL file so
+# the operator can see whether (and how) visitors used the chat. Off by default
+# only if explicitly disabled. The admin view endpoint is gated by ADMIN_TOKEN.
+CHAT_TRACING = os.getenv("GRID_CHAT_TRACING", "1") not in ("0", "false", "False", "")
+CHAT_TRACE_FILE = Path(
+    os.getenv("GRID_CHAT_TRACE_FILE", str(Path(__file__).resolve().parents[1] / "chat_traces.jsonl"))
+)
+# Shared secret required to read /api/admin/traces. Empty = endpoint disabled.
+ADMIN_TOKEN = os.getenv("GRID_ADMIN_TOKEN", "")

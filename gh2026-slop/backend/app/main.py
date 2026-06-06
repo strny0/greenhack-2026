@@ -10,12 +10,12 @@ import warnings
 
 warnings.filterwarnings("ignore")
 
-from fastapi import FastAPI, HTTPException, Query  # noqa: E402
+from fastapi import FastAPI, Header, HTTPException, Query, Request  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import StreamingResponse  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
-from . import config, engine, weather  # noqa: E402
+from . import config, engine, tracing, weather  # noqa: E402
 from .agent import SUGGESTED_QUESTIONS, stream_agent  # noqa: E402
 from .chat import chat  # noqa: E402  (legacy one-shot grounded chat)
 from .data_loader import store  # noqa: E402
@@ -171,14 +171,79 @@ async def chat_endpoint(req: ChatRequest) -> dict:
 
 
 @app.post("/api/agent/stream")
-async def agent_stream(req: ChatRequest) -> StreamingResponse:
+async def agent_stream(req: ChatRequest, request: Request) -> StreamingResponse:
     """Tool-calling dispatcher agent. Streams NDJSON events (text deltas, tool
-    calls, tool results) consumed by the assistant-ui custom runtime."""
+    calls, tool results) consumed by the assistant-ui custom runtime.
+
+    Each turn is appended to the server-side usage log (see app.tracing) so the
+    operator can see who used the chat in the deployment."""
+    headers = dict(request.headers)
+    client_host = request.client.host if request.client else None
+
+    async def traced():
+        """Pass the agent's NDJSON straight through while accumulating a compact
+        summary (reply text + tool names) to log once the turn ends."""
+        reply_parts: list[str] = []
+        tools: list[str] = []
+        error: str | None = None
+        try:
+            async for line in stream_agent(
+                req.messages, req.timestamp, req.selection, req.simulation
+            ):
+                try:
+                    ev = _json.loads(line)
+                    if ev.get("type") == "text":
+                        reply_parts.append(str(ev.get("delta", "")))
+                    elif ev.get("type") == "tool-call":
+                        tools.append(str(ev.get("name", "")))
+                    elif ev.get("type") == "error":
+                        error = str(ev.get("message"))
+                except (ValueError, AttributeError):
+                    pass
+                yield line
+        finally:
+            tracing.append(
+                tracing.build_record(
+                    headers=headers,
+                    client_host=client_host,
+                    messages=req.messages,
+                    timestamp=req.timestamp,
+                    selection=req.selection,
+                    simulation=req.simulation,
+                    reply="".join(reply_parts),
+                    tools=tools,
+                    error=error,
+                )
+            )
+
     return StreamingResponse(
-        stream_agent(req.messages, req.timestamp, req.selection, req.simulation),
+        traced(),
         media_type="application/x-ndjson",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# --- usage tracing (admin) ---------------------------------------------------
+
+
+def _require_admin(token: str | None) -> None:
+    """Gate the trace views on the ADMIN_TOKEN shared secret."""
+    if not config.ADMIN_TOKEN:
+        raise HTTPException(404, "Tracing admin endpoint is disabled (set GRID_ADMIN_TOKEN).")
+    if token != config.ADMIN_TOKEN:
+        raise HTTPException(401, "Bad or missing admin token.")
+
+
+@app.get("/api/admin/traces")
+def admin_traces(
+    limit: int = Query(200, ge=1, le=5000),
+    token: str | None = Query(None),
+    x_admin_token: str | None = Header(None),
+) -> dict:
+    """Recent dispatcher-agent usage. Pass the secret as `?token=` or an
+    `X-Admin-Token` header. Returns a usage rollup plus the latest turns."""
+    _require_admin(token or x_admin_token)
+    return {"stats": tracing.stats(), "traces": tracing.read_recent(limit)}
 
 
 # --- static frontend (single-origin deploy) ----------------------------------

@@ -221,3 +221,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Chat usage tracing log (runtime, per-deployment)
+chat_traces.jsonl
+gh2026-slop/backend/chat_traces.jsonl
