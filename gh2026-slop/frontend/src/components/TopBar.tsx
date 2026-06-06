@@ -24,10 +24,20 @@ const fmt = (ts: string) =>
     minute: "2-digit",
   });
 
-function Kpi({ label, value, tone }: { label: string; value: string; tone?: "bad" | "warn" }) {
+function Kpi({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone?: "bad" | "warn";
+}) {
   return (
     <div className="flex min-w-[72px] flex-col">
-      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</span>
+      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+        {label}
+      </span>
       <span
         className={cn(
           "text-[15px] font-semibold tabular-nums",
@@ -60,9 +70,6 @@ export default function TopBar({
             <span className="smooth-shimmer inline-block">Smooth</span>
             <span className="pl-5">Operator</span>
           </h1>
-          <div className="hidden text-[11px] text-muted-foreground sm:block">
-            ČEPS · transmission situational awareness
-          </div>
         </div>
       </div>
 
@@ -96,13 +103,25 @@ export default function TopBar({
       </div>
 
       <div className="hidden flex-1 gap-5 lg:flex">
-        <Kpi label="Generation" value={`${s.total_generation_mw.toLocaleString()} MW`} />
+        <Kpi
+          label="Generation"
+          value={`${s.total_generation_mw.toLocaleString()} MW`}
+        />
         <Kpi label="Load" value={`${s.total_load_mw.toLocaleString()} MW`} />
-        <Kpi label="Balancing" value={`${s.slack_mw > 0 ? "+" : ""}${s.slack_mw} MW`} />
+        <Kpi
+          label="Balancing"
+          value={`${s.slack_mw > 0 ? "+" : ""}${s.slack_mw} MW`}
+        />
         <Kpi
           label="Max line load"
           value={`${s.max_loading_pct}%`}
-          tone={s.max_loading_pct >= 90 ? "bad" : s.max_loading_pct >= 75 ? "warn" : undefined}
+          tone={
+            s.max_loading_pct >= 90
+              ? "bad"
+              : s.max_loading_pct >= 75
+                ? "warn"
+                : undefined
+          }
         />
         <Kpi
           label="Alerts"
@@ -117,7 +136,12 @@ export default function TopBar({
       </div>
 
       <div className="flex w-full items-center gap-3 md:w-auto md:min-w-[360px] md:flex-1 lg:min-w-[420px] lg:flex-none">
-        <Button variant="outline" size="icon" onClick={togglePlay} title="Play / pause">
+        <Button
+          variant="outline"
+          size="icon"
+          onClick={togglePlay}
+          title="Play / pause"
+        >
           {playing ? <Pause className="size-4" /> : <Play className="size-4" />}
         </Button>
         <Slider
@@ -128,7 +152,9 @@ export default function TopBar({
           value={[idx]}
           onValueChange={(v) => setIdx(v[0])}
         />
-        <span className="min-w-[150px] text-right tabular-nums">{fmt(frame.timestamp)}</span>
+        <span className="min-w-[150px] text-right tabular-nums">
+          {fmt(frame.timestamp)}
+        </span>
       </div>
     </header>
   );

@@ -5,12 +5,34 @@ import os
 from pathlib import Path
 
 _HERE = Path(__file__).resolve()
+# gridstats is .../gh2026-slop/backend/app/gridstats, so:
+#   parents[3] == gh2026-slop   parents[4] == <repo>
+_APP_ROOT = _HERE.parents[3]
+_REPO_ROOT = _HERE.parents[4]
 
-# repo dataset lives at <repo>/dataset/data; gridstats is
-# .../gh2026-slop/backend/app/gridstats, so parents[4] == <repo>.
-DATA_DIR = Path(
-    os.environ.get("GRIDSTATS_DATA_DIR", _HERE.parents[4] / "dataset" / "data")
-)
+
+def _resolve_data_dir() -> Path:
+    """Locate the extracted ČEPS dataset's inner ``data/`` dir.
+
+    Precedence (first match wins) — explicit env vars are honoured
+    unconditionally; the historical ``<repo>/dataset/data`` default is kept as
+    the final fallback so existing setups keep working. In between we now also
+    discover the path the main app (app/config.py) defaults to, so a plain
+    ``python -m app.gridstats.build`` works without any env var.
+    """
+    # 1. explicit override for gridstats; 2. shared with the main app.
+    for var in ("GRIDSTATS_DATA_DIR", "GRID_DATA_DIR"):
+        if os.environ.get(var):
+            return Path(os.environ[var])
+    # 3. main app's default location (see app/config.py); 4. legacy default.
+    app_default = _APP_ROOT / "data" / "greenhack-2026-ČEPS-dataset" / "data"
+    legacy_default = _REPO_ROOT / "dataset" / "data"
+    if app_default.exists():
+        return app_default
+    return legacy_default
+
+
+DATA_DIR = _resolve_data_dir()
 SNAPSHOTS_DIR = DATA_DIR / "snapshots"
 STATIC_DIR    = DATA_DIR / "static"
 FORECASTS_DIR = DATA_DIR / "forecasts"
