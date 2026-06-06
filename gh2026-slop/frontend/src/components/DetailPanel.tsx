@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
-import { X } from "lucide-react";
+import { LocateFixedIcon, X } from "lucide-react";
 import { api } from "../api";
 import type { GridLine, GridNode } from "../types";
 import { formatGenTypes, labelOf, NODE_KIND_LABEL } from "@/lib/gridmeta";
@@ -11,6 +11,8 @@ interface Props {
   windowStartTs: string;
   windowCount: number;
   onClose: () => void;
+  /** Fly the camera to the selected element on whichever view is active. */
+  onGoTo: (kind: "node" | "line", id: string) => void;
 }
 
 const hhmm = (ts: string) => new Date(ts).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
@@ -24,7 +26,7 @@ function Row({ k, v }: { k: string; v: React.ReactNode }) {
   );
 }
 
-export default function DetailPanel({ node, line, windowStartTs, windowCount, onClose }: Props) {
+export default function DetailPanel({ node, line, windowStartTs, windowCount, onClose, onGoTo }: Props) {
   const [data, setData] = useState<{ t: string; v: number | null }[]>([]);
   const [metricLabel, setMetricLabel] = useState("");
 
@@ -40,6 +42,7 @@ export default function DetailPanel({ node, line, windowStartTs, windowCount, on
       .catch(() => setData([]));
   }, [node, line, windowStartTs, windowCount]);
 
+  const el = node ?? line;
   const title = node ? labelOf(node) : line ? labelOf(line) : "";
   const genTypes = node ? formatGenTypes(node.gen_types) : "";
 
@@ -51,7 +54,20 @@ export default function DetailPanel({ node, line, windowStartTs, windowCount, on
       >
         <X className="size-4" />
       </button>
-      <h3 className="mb-0.5 pr-5 text-sm font-semibold">{title}</h3>
+      <div className="mb-0.5 flex items-center gap-1.5 pr-5">
+        <h3 className="text-sm font-semibold">{title}</h3>
+        {el && (
+          <button
+            type="button"
+            onClick={() => onGoTo(node ? "node" : "line", el.id)}
+            title={`Go to ${title} (zoom in on the current view)`}
+            aria-label={`Go to ${title}`}
+            className="inline-flex shrink-0 cursor-pointer items-center rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-foreground"
+          >
+            <LocateFixedIcon className="size-3.5" />
+          </button>
+        )}
+      </div>
 
       {node && (
         <>

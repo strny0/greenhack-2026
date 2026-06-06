@@ -284,6 +284,7 @@ export default function App() {
               windowStartTs={windowStartTs}
               windowCount={frames.length}
               onClose={() => setSelected(null)}
+              onGoTo={zoom}
             />
           )}
         </div>
