@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import maplibregl from "maplibre-gl";
 import type { Meta, StateFrame } from "../types";
 import {
@@ -10,6 +10,7 @@ import {
 } from "./styling";
 import { formatGenTypes, iconCategoryForNode, labelOf, NODE_KIND_LABEL } from "@/lib/gridmeta";
 import { loadGridIcons } from "./mapIcons";
+import { lineDeltas, nodeDeltas, type LineDelta, type NodeDelta } from "@/lib/simdelta";
 
 export interface Selection {
   kind: "node" | "line";
@@ -24,6 +25,9 @@ interface Props {
   onSelect: (s: Selection | null) => void;
   /** A "fly the camera here" request; the nonce re-triggers repeated jumps. */
   zoomTo: { kind: "node" | "line"; id: string; nonce: number } | null;
+  /** Pre-failure frame for the delta overlay; null when not simulating. */
+  baseFrame?: StateFrame | null;
+  simulating?: boolean;
 }
 
 const STYLE: maplibregl.StyleSpecification = {
@@ -42,7 +46,11 @@ const STYLE: maplibregl.StyleSpecification = {
   ],
 };
 
-function buildGeo(frame: StateFrame, highlight: Set<string>) {
+function buildGeo(
+  frame: StateFrame,
+  highlight: Set<string>,
+  deltas: { lines: Record<string, LineDelta>; nodes: Record<string, NodeDelta> } | null,
+) {
   const coord: Record<string, [number, number]> = {};
   for (const n of frame.nodes) coord[n.id] = [n.lon, n.lat];
 
@@ -53,6 +61,7 @@ function buildGeo(frame: StateFrame, highlight: Set<string>) {
         const a = coord[l.from_node];
         const b = coord[l.to_node];
         if (!a || !b) return null;
+        const d = deltas?.lines[l.id];
         return {
           type: "Feature" as const,
           geometry: { type: "LineString" as const, coordinates: [a, b] },
@@ -63,6 +72,9 @@ function buildGeo(frame: StateFrame, highlight: Set<string>) {
             loading: l.loading_pct ?? -1,
             inservice: l.in_service ? 1 : 0,
             hl: highlight.has(l.id) ? 1 : 0,
+            dload: d?.deltaLoading ?? 0,
+            mover: d?.mover ? 1 : 0,
+            tripped: d?.tripped ? 1 : 0,
           },
         };
       })
@@ -85,6 +97,7 @@ function buildGeo(frame: StateFrame, highlight: Set<string>) {
         mag: Math.max(n.production_mw, n.consumption_mw, 0),
         vm: n.vm_pu ?? 0,
         hl: highlight.has(n.id) ? 1 : 0,
+        worsened: deltas?.nodes[n.id]?.worsened ? 1 : 0,
       },
     })),
   };
@@ -103,10 +116,23 @@ const loadingColor: maplibregl.ExpressionSpecification = [
   ] as any,
 ];
 
-export default function MapView({ frame, meta, highlight, selected, onSelect, zoomTo }: Props) {
+export default function MapView({ frame, meta, highlight, selected, onSelect, zoomTo, baseFrame, simulating }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const ready = useRef(false);
+
+  // Delta overlay vs the pre-failure frame (null when not simulating). Recomputed
+  // whenever the rendered frame changes so it tracks the time scrubber.
+  const deltas = useMemo(
+    () =>
+      simulating && baseFrame
+        ? { lines: lineDeltas(baseFrame, frame), nodes: nodeDeltas(baseFrame, frame) }
+        : null,
+    [simulating, baseFrame, frame],
+  );
+  // `deltasRef` lets the once-only map-load handler read the latest deltas.
+  const deltasRef = useRef(deltas);
+  deltasRef.current = deltas;
 
   // init once
   useEffect(() => {
@@ -126,7 +152,7 @@ export default function MapView({ frame, meta, highlight, selected, onSelect, zo
     mapRef.current = map;
 
     map.on("load", () => {
-      const geo = buildGeo(frame, highlight);
+      const geo = buildGeo(frame, highlight, deltasRef.current);
       map.addSource("lines", { type: "geojson", data: geo.lines as any });
       map.addSource("nodes", { type: "geojson", data: geo.nodes as any });
 
@@ -211,6 +237,55 @@ export default function MapView({ frame, meta, highlight, selected, onSelect, zo
             "offline", STATE_STROKE_COLOR.offline,
             STATE_STROKE_COLOR.ok,
           ],
+        },
+      });
+
+      // --- simulation overlay layers (hidden until a sim is active) ---
+      // Hot glow beneath branches whose loading jumped (drawn under "lines" so
+      // the loading color still reads on top). Opacity is pulsed from an effect.
+      map.addLayer(
+        {
+          id: "lines-mover-glow",
+          type: "line",
+          source: "lines",
+          filter: ["==", ["get", "mover"], 1],
+          layout: { "line-cap": "round", visibility: "none" },
+          paint: {
+            "line-color": "#ff1f1f",
+            "line-width": ["interpolate", ["linear"], ["get", "loading"], 0, 12, 100, 24],
+            "line-opacity": 0.7,
+            "line-blur": 3,
+          },
+        },
+        "lines",
+      );
+      // Tripped (out-of-service) branches: bold dashed grey on top.
+      map.addLayer({
+        id: "lines-tripped",
+        type: "line",
+        source: "lines",
+        filter: ["==", ["get", "tripped"], 1],
+        layout: { visibility: "none", "line-cap": "round" },
+        paint: {
+          "line-color": OUT_OF_SERVICE_COLOR,
+          "line-width": 5,
+          "line-dasharray": [1.6, 1.4],
+          "line-opacity": 1,
+        },
+      });
+      // Buses whose state worsened: a bold pulsing red ring.
+      map.addLayer({
+        id: "nodes-worsened",
+        type: "circle",
+        source: "nodes",
+        filter: ["==", ["get", "worsened"], 1],
+        layout: { visibility: "none" },
+        paint: {
+          "circle-radius": ["+", ["interpolate", ["linear"], ["get", "mag"], 0, 8, 500, 14, 2000, 24], 11],
+          "circle-color": "rgba(255,31,31,0.12)",
+          "circle-stroke-color": "#ff1f1f",
+          "circle-stroke-width": 5,
+          "circle-stroke-opacity": 0.9,
         },
       });
 
@@ -312,14 +387,36 @@ export default function MapView({ frame, meta, highlight, selected, onSelect, zo
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // update data when frame/highlight changes
+  // update data when frame/highlight/deltas change
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !ready.current) return;
-    const geo = buildGeo(frame, highlight);
+    const geo = buildGeo(frame, highlight, deltas);
     (map.getSource("lines") as maplibregl.GeoJSONSource)?.setData(geo.lines as any);
     (map.getSource("nodes") as maplibregl.GeoJSONSource)?.setData(geo.nodes as any);
-  }, [frame, highlight]);
+  }, [frame, highlight, deltas]);
+
+  // simulation overlay: pulse the "mover" glow + worsened-bus ring while a sim is
+  // active, and toggle the overlay layers' visibility.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready.current) return;
+    const vis = simulating ? "visible" : "none";
+    for (const id of ["lines-mover-glow", "lines-tripped", "nodes-worsened"]) {
+      if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", vis);
+    }
+    if (!simulating) return;
+    let on = true;
+    const tick = () => {
+      on = !on;
+      if (map.getLayer("lines-mover-glow"))
+        map.setPaintProperty("lines-mover-glow", "line-opacity", on ? 0.9 : 0.3);
+      if (map.getLayer("nodes-worsened"))
+        map.setPaintProperty("nodes-worsened", "circle-stroke-opacity", on ? 1 : 0.35);
+    };
+    const iv = window.setInterval(tick, 600);
+    return () => window.clearInterval(iv);
+  }, [simulating]);
 
   // selection filters
   useEffect(() => {

@@ -5,6 +5,7 @@ import type {
   StateFrame,
   WeatherPoint,
   WhatIfResponse,
+  WhatIfWindowResponse,
 } from "./types";
 
 const J = async (r: Response) => {
@@ -86,6 +87,52 @@ export const api = {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     }).then(J),
+
+  // Whole-day failure simulation: resolve a preset once, solve every hour with it
+  // applied. Streamed like windowProgress so the loading bar reflects download.
+  whatifWindow: async (
+    start: number,
+    count: number,
+    preset: string,
+    onProgress?: (fraction: number) => void,
+  ): Promise<WhatIfWindowResponse> => {
+    const res = await fetch("/api/whatif_window", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ start, count, preset }),
+    });
+    if (!res.ok) {
+      // surface the backend's 422 reason when a preset is infeasible
+      let msg = `${res.status} ${res.statusText}`;
+      try {
+        const j = await res.json();
+        if (j?.detail) msg = String(j.detail);
+      } catch {
+        /* ignore */
+      }
+      throw new Error(msg);
+    }
+    const reader = res.body?.getReader();
+    if (!reader) return res.json();
+    const estTotal = Math.max(1, count * 80_000);
+    const chunks: Uint8Array[] = [];
+    let received = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      received += value.length;
+      onProgress?.(Math.min(0.99, received / estTotal));
+    }
+    const buf = new Uint8Array(received);
+    let off = 0;
+    for (const c of chunks) {
+      buf.set(c, off);
+      off += c.length;
+    }
+    onProgress?.(1);
+    return JSON.parse(new TextDecoder().decode(buf));
+  },
 
   weather: (): Promise<{ points: WeatherPoint[]; summary: string }> =>
     fetch("/api/weather").then(J),

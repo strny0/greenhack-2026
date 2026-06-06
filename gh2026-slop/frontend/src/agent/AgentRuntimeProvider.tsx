@@ -40,16 +40,21 @@ function messageText(m: ThreadMessage): string {
 }
 
 type Selection = { kind: "node" | "line"; id: string } | null;
+type Simulation = import("../types").ScenarioSpec | null;
 
 function makeAdapter(
   timestampRef: { current: string },
   selectionRef: { current: Selection },
+  simulationRef: { current: Simulation },
 ): ChatModelAdapter {
   return {
     async *run({ messages, abortSignal }) {
       const payload = {
         timestamp: timestampRef.current,
         selection: selectionRef.current,
+        // Sending the active scenario on every request is what makes the agent
+        // aware a simulation is running (drives its system-prompt injection).
+        simulation: simulationRef.current,
         messages: messages
           .filter((m) => m.role === "user" || m.role === "assistant")
           .map((m) => ({ role: m.role, content: messageText(m) })),
@@ -142,21 +147,25 @@ function makeAdapter(
 export function AgentRuntimeProvider({
   timestamp,
   selection,
+  simulation = null,
   children,
 }: {
   timestamp: string;
   selection: Selection;
+  simulation?: Simulation;
   children: ReactNode;
 }) {
   // The adapter is created once; refs let it always read the *current* frame
-  // timestamp and map selection without rebuilding the runtime.
+  // timestamp, map selection, and active simulation without rebuilding the runtime.
   const tsRef = useRef(timestamp);
   tsRef.current = timestamp;
   const selRef = useRef<Selection>(selection);
   selRef.current = selection;
+  const simRef = useRef<Simulation>(simulation);
+  simRef.current = simulation;
 
   const adapterRef = useRef<ChatModelAdapter>();
-  if (!adapterRef.current) adapterRef.current = makeAdapter(tsRef, selRef);
+  if (!adapterRef.current) adapterRef.current = makeAdapter(tsRef, selRef, simRef);
 
   const runtime = useLocalRuntime(adapterRef.current);
   return (

@@ -105,3 +105,16 @@ class WhatIfResponse(BaseModel):
     scenario: StateFrame
     diffs: list[dict]  # per-line loading change [{id, name, before, after, delta}]
     new_alerts: list[Alert]
+
+
+class ScenarioSpec(BaseModel):
+    """A concrete failure scenario (resolved from a preset) applied across a day."""
+
+    preset: str = ""  # "trip_most_loaded_line" | "trip_largest_generator" | "load_surge" | "custom"
+    label: str = ""
+    disconnect_lines: list[str] = []
+    trip_nodes: list[str] = []
+    load_scale: float = 1.0
+    resolved: list[str] = []  # element id(s) the preset chose
+    feasible: bool = True
+    reason: str = ""  # why infeasible, when feasible is False

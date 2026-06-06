@@ -5,6 +5,7 @@ analysis, what-if scenarios, weather overlay, and a dispatcher chatbot proxy.
 """
 from __future__ import annotations
 
+import json as _json
 import warnings
 
 warnings.filterwarnings("ignore")
@@ -121,6 +122,27 @@ def whatif(req: WhatIfRequest) -> WhatIfResponse:
     return engine.run_whatif(req)
 
 
+class WhatIfWindowRequest(BaseModel):
+    start: int
+    count: int = 24
+    preset: str
+
+
+@app.post("/api/whatif_window")
+def whatif_window_endpoint(req: WhatIfWindowRequest) -> StreamingResponse:
+    """Whole-day failure simulation: resolve a preset once at the window start,
+    then solve a scenario frame for each hour. Streamed JSON so the frontend can
+    show a download/progress bar (mirrors /api/window)."""
+    spec, frames = engine.whatif_window(req.start, req.count, req.preset)
+    if not spec.feasible:
+        raise HTTPException(422, spec.reason or "Scenario not feasible")
+    payload = {
+        "scenario": spec.model_dump(),
+        "frames": [f.model_dump() for f in frames],
+    }
+    return StreamingResponse(iter([_json.dumps(payload)]), media_type="application/json")
+
+
 # --- weather -----------------------------------------------------------------
 
 
@@ -136,6 +158,7 @@ class ChatRequest(BaseModel):
     messages: list[dict]
     timestamp: str
     selection: dict | None = None  # {kind: "node"|"line", id} the operator has selected
+    simulation: dict | None = None  # active failure-simulation ScenarioSpec, if any
 
 
 @app.post("/api/chat")
@@ -152,7 +175,7 @@ async def agent_stream(req: ChatRequest) -> StreamingResponse:
     """Tool-calling dispatcher agent. Streams NDJSON events (text deltas, tool
     calls, tool results) consumed by the assistant-ui custom runtime."""
     return StreamingResponse(
-        stream_agent(req.messages, req.timestamp, req.selection),
+        stream_agent(req.messages, req.timestamp, req.selection, req.simulation),
         media_type="application/x-ndjson",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

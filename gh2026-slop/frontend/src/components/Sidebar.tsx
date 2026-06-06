@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
-import type { ContingencyResult, Meta, StateFrame, WeatherPoint, WhatIfResponse } from "../types";
+import type { ContingencyResult, Meta, PresetKey, ScenarioSpec, StateFrame, WeatherPoint, WhatIfResponse } from "../types";
 import type { Selection } from "./MapView";
 import AgentChat from "./AgentChat";
 import { AgentRuntimeProvider } from "../agent/AgentRuntimeProvider";
@@ -59,6 +59,12 @@ interface Props {
   onClearFocus: () => void;
   onSelect: (s: Selection | null) => void;
   onZoom: (kind: "node" | "line", id: string) => void;
+  /** Active whole-day failure simulation (its resolved spec), or null. */
+  simulation: { spec: ScenarioSpec } | null;
+  simLoading: boolean;
+  simError: string | null;
+  onActivateSim: (preset: PresetKey) => void;
+  onExitSim: () => void;
 }
 
 type Tab = "alerts" | "n1" | "whatif" | "weather" | "chat";
@@ -125,7 +131,7 @@ const MAX_WIDTH = 720;
 const DEFAULT_WIDTH = 390;
 const WIDTH_KEY = "sidebar-width";
 
-export default function Sidebar({ frame, meta, agentTimestamp, selected, onFocus, onClearFocus, onSelect, onZoom }: Props) {
+export default function Sidebar({ frame, meta, agentTimestamp, selected, onFocus, onClearFocus, onSelect, onZoom, simulation, simLoading, simError, onActivateSim, onExitSim }: Props) {
   // On phones the panel becomes a collapsible bottom sheet under the map; on
   // desktop it's the resizable right rail. `mobileOpen` drives the sheet height.
   const isDesktop = useMediaQuery("(min-width: 768px)");
@@ -227,7 +233,7 @@ export default function Sidebar({ frame, meta, agentTimestamp, selected, onFocus
   return (
     // The runtime provider is mounted once, above the tab body, so the agent
     // conversation persists when the operator switches tabs.
-    <AgentRuntimeProvider timestamp={agentTimestamp || frame.timestamp} selection={selected}>
+    <AgentRuntimeProvider timestamp={agentTimestamp || frame.timestamp} selection={selected} simulation={simulation?.spec ?? null}>
       <aside
         className={cn(
           "relative flex flex-col bg-card",
@@ -326,7 +332,17 @@ export default function Sidebar({ frame, meta, agentTimestamp, selected, onFocus
             <TabsContent value="whatif" className="m-0 min-h-0 flex-1">
               <ScrollArea className="h-full">
                 <div className="p-3">
-                  <WhatIfTab frame={frame} labels={labels} onFocus={onFocus} onSelect={onSelect} />
+                  <WhatIfTab
+                    frame={frame}
+                    labels={labels}
+                    onFocus={onFocus}
+                    onSelect={onSelect}
+                    simulation={simulation}
+                    simLoading={simLoading}
+                    simError={simError}
+                    onActivateSim={onActivateSim}
+                    onExitSim={onExitSim}
+                  />
                 </div>
               </ScrollArea>
             </TabsContent>
@@ -439,7 +455,33 @@ function N1Tab({ ts, labels, onFocus, onSelect }: { ts: string; labels: Record<s
 
 const NONE = "__none__";
 
-function WhatIfTab({ frame, labels, onFocus, onSelect }: { frame: StateFrame; labels: Record<string, string>; onFocus: (ids: string[]) => void; onSelect: (s: Selection) => void }) {
+const SIM_PRESETS: { key: PresetKey; label: string }[] = [
+  { key: "trip_most_loaded_line", label: "Trip most-loaded line" },
+  { key: "trip_largest_generator", label: "Trip largest generator" },
+  { key: "load_surge", label: "Load surge (+50% demand)" },
+];
+
+function WhatIfTab({
+  frame,
+  labels,
+  onFocus,
+  onSelect,
+  simulation,
+  simLoading,
+  simError,
+  onActivateSim,
+  onExitSim,
+}: {
+  frame: StateFrame;
+  labels: Record<string, string>;
+  onFocus: (ids: string[]) => void;
+  onSelect: (s: Selection) => void;
+  simulation: { spec: ScenarioSpec } | null;
+  simLoading: boolean;
+  simError: string | null;
+  onActivateSim: (preset: PresetKey) => void;
+  onExitSim: () => void;
+}) {
   const [disc, setDisc] = useState<string>(NONE);
   const [scale, setScale] = useState(1.0);
   const [res, setRes] = useState<WhatIfResponse | null>(null);
@@ -466,6 +508,45 @@ function WhatIfTab({ frame, labels, onFocus, onSelect }: { frame: StateFrame; la
 
   return (
     <>
+      {/* Whole-day failure simulation — overrides the loaded day live across both
+          views. Sits above the single-hour manual what-if below. */}
+      <div className="mb-3 rounded-lg border border-amber-500/40 bg-amber-500/5 p-2.5">
+        <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-amber-600 dark:text-amber-400">
+          ⚡ Live failure simulation
+        </div>
+        {simulation ? (
+          <>
+            <div className="mb-2 text-[11px] text-muted-foreground">{simulation.spec.label}</div>
+            <Button variant="outline" className="w-full" onClick={onExitSim}>
+              Exit simulation
+            </Button>
+          </>
+        ) : (
+          <>
+            <div className="mb-2 text-[11px] text-muted-foreground">
+              Apply a failure to the whole loaded day and watch alerts, buses and lines react.
+            </div>
+            <div className="flex flex-col gap-1.5">
+              {SIM_PRESETS.map((p) => (
+                <Button
+                  key={p.key}
+                  variant="outline"
+                  className="w-full justify-start"
+                  disabled={simLoading}
+                  onClick={() => onActivateSim(p.key)}
+                >
+                  {p.label}
+                </Button>
+              ))}
+            </div>
+            {simLoading && (
+              <div className="mt-2 text-[11px] text-muted-foreground">Solving 24 hours…</div>
+            )}
+            {simError && <div className="mt-2 text-[11px] text-red-500">{simError}</div>}
+          </>
+        )}
+      </div>
+
       <Note>Apply operator actions and re-run a real load flow. The map highlights what moves.</Note>
       <div className="mb-2.5">
         <label className="mb-1 block text-[11px] text-muted-foreground">Disconnect a line</label>

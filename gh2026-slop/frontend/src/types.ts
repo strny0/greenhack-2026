@@ -89,6 +89,28 @@ export interface WhatIfResponse {
   new_alerts: Alert[];
 }
 
+export type PresetKey =
+  | "trip_most_loaded_line"
+  | "trip_largest_generator"
+  | "load_surge";
+
+/** A concrete failure scenario resolved from a preset, applied across the day. */
+export interface ScenarioSpec {
+  preset: string;
+  label: string;
+  disconnect_lines: string[];
+  trip_nodes: string[];
+  load_scale: number;
+  resolved: string[];
+  feasible: boolean;
+  reason: string;
+}
+
+export interface WhatIfWindowResponse {
+  scenario: ScenarioSpec;
+  frames: StateFrame[];
+}
+
 export interface Meta {
   count: number;
   timestamps: string[];

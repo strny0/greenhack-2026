@@ -8,6 +8,9 @@ import { formatGenTypes, labelOf, NODE_KIND_LABEL } from "@/lib/gridmeta";
 interface Props {
   node: GridNode | null;
   line: GridLine | null;
+  /** Pre-failure values for the same element, when a simulation is active. */
+  baseNode?: GridNode | null;
+  baseLine?: GridLine | null;
   windowStartTs: string;
   windowCount: number;
   onClose: () => void;
@@ -26,7 +29,7 @@ function Row({ k, v }: { k: string; v: React.ReactNode }) {
   );
 }
 
-export default function DetailPanel({ node, line, windowStartTs, windowCount, onClose, onGoTo }: Props) {
+export default function DetailPanel({ node, line, baseNode, baseLine, windowStartTs, windowCount, onClose, onGoTo }: Props) {
   const [data, setData] = useState<{ t: string; v: number | null }[]>([]);
   const [metricLabel, setMetricLabel] = useState("");
 
@@ -80,6 +83,14 @@ export default function DetailPanel({ node, line, windowStartTs, windowCount, on
               <span className="font-medium text-foreground">{genTypes}</span>
             </div>
           )}
+          {baseNode && baseNode.state !== node.state && (
+            <div className="mb-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px]">
+              <span className="text-muted-foreground">Simulation: </span>
+              <span className="font-medium uppercase">
+                {baseNode.state} → {node.state}
+              </span>
+            </div>
+          )}
           <div className="mb-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
             <Row k="Voltage" v={`${node.vm_pu?.toFixed(3) ?? "—"} p.u. (${node.vm_kv ?? "—"} kV)`} />
             <Row k="Angle" v={`${node.va_degree ?? "—"}°`} />
@@ -95,6 +106,18 @@ export default function DetailPanel({ node, line, windowStartTs, windowCount, on
           <div className="mb-2 text-[11px] text-muted-foreground">
             {line.kind} · {line.from_node} → {line.to_node} {line.in_service ? "" : "· OUT OF SERVICE"}
           </div>
+          {baseLine && baseLine.loading_pct != null && line.loading_pct != null && (
+            <div className="mb-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px]">
+              <span className="text-muted-foreground">Simulation: </span>
+              <span className="font-medium tabular-nums">
+                {baseLine.loading_pct}% → {line.loading_pct}%
+              </span>{" "}
+              <span className="tabular-nums text-amber-600 dark:text-amber-400">
+                ({line.loading_pct - baseLine.loading_pct > 0 ? "+" : ""}
+                {Math.round((line.loading_pct - baseLine.loading_pct) * 10) / 10}pp)
+              </span>
+            </div>
+          )}
           <div className="mb-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
             <Row k="Loading" v={`${line.loading_pct ?? "—"}%`} />
             <Row k="P from" v={`${line.p_from_mw ?? "—"} MW`} />
