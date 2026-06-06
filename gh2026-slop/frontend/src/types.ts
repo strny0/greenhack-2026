@@ -4,7 +4,11 @@ export type NodeType = "generation" | "load" | "substation" | "slack";
 export interface GridNode {
   id: string;
   name: string;
+  /** Operator-friendly display name from overrides; falls back to `name`. */
+  label: string;
   type: NodeType;
+  /** Generator fuel types at this bus, ranked by capacity (e.g. ["solar","hydro"]). */
+  gen_types: string[];
   zone: string;
   lat: number;
   lon: number;
@@ -26,6 +30,8 @@ export interface GridNode {
 export interface GridLine {
   id: string;
   name: string;
+  /** Operator-friendly display name from overrides; falls back to `name`. */
+  label: string;
   from_node: string;
   to_node: string;
   kind: "line" | "trafo";

@@ -3,6 +3,7 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceL
 import { X } from "lucide-react";
 import { api } from "../api";
 import type { GridLine, GridNode } from "../types";
+import { formatGenTypes, labelOf, NODE_KIND_LABEL } from "@/lib/gridmeta";
 
 interface Props {
   node: GridNode | null;
@@ -39,7 +40,8 @@ export default function DetailPanel({ node, line, windowStartTs, windowCount, on
       .catch(() => setData([]));
   }, [node, line, windowStartTs, windowCount]);
 
-  const title = node?.name ?? line?.name ?? "";
+  const title = node ? labelOf(node) : line ? labelOf(line) : "";
+  const genTypes = node ? formatGenTypes(node.gen_types) : "";
 
   return (
     <div className="absolute bottom-3 left-3 z-20 w-[calc(100%-1.5rem)] max-w-[340px] rounded-xl border bg-card/95 p-3.5 shadow-lg backdrop-blur">
@@ -54,8 +56,14 @@ export default function DetailPanel({ node, line, windowStartTs, windowCount, on
       {node && (
         <>
           <div className="mb-2 text-[11px] text-muted-foreground">
-            {node.type} · zone {node.zone} · {node.v_nominal_kv} kV {node.is_slack ? "· slack" : ""}
+            {node.is_slack ? "Slack bus" : NODE_KIND_LABEL[node.type]} · zone {node.zone} · {node.v_nominal_kv} kV
           </div>
+          {genTypes && (
+            <div className="mb-2 text-[11px]">
+              <span className="text-muted-foreground">Generator type: </span>
+              <span className="font-medium text-foreground">{genTypes}</span>
+            </div>
+          )}
           <div className="mb-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
             <Row k="Voltage" v={`${node.vm_pu?.toFixed(3) ?? "—"} p.u. (${node.vm_kv ?? "—"} kV)`} />
             <Row k="Angle" v={`${node.va_degree ?? "—"}°`} />

@@ -11,6 +11,7 @@ dataset means changing paths/parsing here and nothing else.
 """
 from __future__ import annotations
 
+import re
 import warnings
 from datetime import datetime, timedelta
 
@@ -36,6 +37,14 @@ def _ts_to_filename(timestamp: str) -> str:
     return dt.strftime(_SNAP_FMT) + ".json"
 
 
+def _gen_fuel_type(gen_name: str) -> str:
+    """Fuel type from a gen name like `combined_cycle_gas_007` -> `combined_cycle_gas`.
+
+    Generators are named `<fuel_type>_<NNN>`; strip the trailing numeric suffix.
+    """
+    return re.sub(r"_\d+$", "", gen_name).strip()
+
+
 class DataStore:
     def __init__(self) -> None:
         self._timestamps: list[str] = []
@@ -44,6 +53,8 @@ class DataStore:
         self.bus_lonlat: dict[str, tuple[float, float]] = {}
         self.bus_sld: dict[str, tuple[float, float]] = {}
         self.bus_renewable: dict[str, dict] = {}  # bus_name -> {solar_mw, wind_mw}
+        # bus_name -> generator fuel types present, ordered by installed capacity desc
+        self.bus_gen_types: dict[str, list[str]] = {}
         self.gen_to_bus: dict[str, str] = {}  # gen_name -> bus_name (deviation join)
         self.bus_to_region: dict[str, str] = {}  # bus_name -> region (load join)
         self.bus_labels: dict[str, str] = {}
@@ -133,6 +144,8 @@ class DataStore:
         gens_csv = config.STATIC_DIR / "gens.csv"
         if gens_csv.exists():
             df = pd.read_csv(gens_csv)
+            # accumulate installed capacity per fuel type per bus, then rank
+            cap_by_bus_type: dict[str, dict[str, float]] = {}
             for _, r in df.iterrows():
                 name = str(r.get("gen_name", ""))
                 bus = str(r.get("bus_name", ""))
@@ -145,6 +158,14 @@ class DataStore:
                     entry["solar_mw"] += cap
                 elif name.startswith("wind"):
                     entry["wind_mw"] += cap
+                fuel = _gen_fuel_type(name)
+                if fuel:
+                    bt = cap_by_bus_type.setdefault(bus, {})
+                    bt[fuel] = bt.get(fuel, 0.0) + cap
+            for bus, by_type in cap_by_bus_type.items():
+                self.bus_gen_types[bus] = [
+                    t for t, _ in sorted(by_type.items(), key=lambda kv: -kv[1])
+                ]
 
         buses_csv = config.STATIC_DIR / "buses.csv"
         if buses_csv.exists():

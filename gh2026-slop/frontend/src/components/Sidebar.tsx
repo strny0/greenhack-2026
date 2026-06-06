@@ -18,6 +18,17 @@ import {
 } from "@/components/ui/select";
 import { ChevronDownIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { buildLabelMap, formatGenTypes, labelOf, NODE_KIND_LABEL } from "@/lib/gridmeta";
+
+interface AlertRow {
+  id: string;
+  kind: "line" | "node";
+  sev: "alert" | "warn";
+  label: string;
+  kindText: string;
+  msg: string;
+  val: number;
+}
 
 /** Reactive media-query match (used to branch the desktop / mobile layout). */
 function useMediaQuery(query: string): boolean {
@@ -64,11 +75,13 @@ function Pill({ tone, children }: { tone: Tone; children: React.ReactNode }) {
 
 function Item({
   onClick,
+  onDoubleClick,
   title,
   pill,
   desc,
 }: {
   onClick?: () => void;
+  onDoubleClick?: () => void;
   title: React.ReactNode;
   pill?: React.ReactNode;
   desc?: React.ReactNode;
@@ -76,9 +89,10 @@ function Item({
   return (
     <div
       onClick={onClick}
+      onDoubleClick={onDoubleClick}
       className={cn(
         "mb-2 rounded-lg border bg-background p-2.5 transition-colors",
-        onClick && "cursor-pointer hover:border-ring",
+        (onClick || onDoubleClick) && "cursor-pointer hover:border-ring",
       )}
     >
       <div className="flex items-center justify-between gap-2 font-semibold">
@@ -150,21 +164,28 @@ export default function Sidebar({ frame, meta, selected, onFocus, onClearFocus, 
   const alerts = useMemo(() => {
     const warn = meta.thresholds.line_loading_warn ?? 75;
     const alert = meta.thresholds.line_loading_alert ?? 90;
-    const out: { id: string; kind: "line" | "node"; sev: "alert" | "warn"; msg: string; val: number }[] = [];
+    const out: AlertRow[] = [];
     for (const l of frame.lines) {
       if (l.loading_pct == null) continue;
-      if (l.loading_pct >= alert) out.push({ id: l.id, kind: "line", sev: "alert", msg: `${l.name} at ${l.loading_pct}%`, val: l.loading_pct });
-      else if (l.loading_pct >= warn) out.push({ id: l.id, kind: "line", sev: "warn", msg: `${l.name} at ${l.loading_pct}%`, val: l.loading_pct });
+      const kindText = l.kind === "trafo" ? "Transformer" : "Transmission line";
+      if (l.loading_pct >= alert) out.push({ id: l.id, kind: "line", sev: "alert", label: labelOf(l), kindText, msg: `loaded at ${l.loading_pct}%`, val: l.loading_pct });
+      else if (l.loading_pct >= warn) out.push({ id: l.id, kind: "line", sev: "warn", label: labelOf(l), kindText, msg: `loaded at ${l.loading_pct}%`, val: l.loading_pct });
     }
     for (const n of frame.nodes) {
-      if (n.state === "alert") out.push({ id: n.id, kind: "node", sev: "alert", msg: `${n.name} voltage ${n.vm_pu?.toFixed(3)} p.u. — limit breach`, val: n.vm_pu ?? 0 });
-      else if (n.state === "warn") out.push({ id: n.id, kind: "node", sev: "warn", msg: `${n.name} voltage ${n.vm_pu?.toFixed(3)} p.u. — near limit`, val: n.vm_pu ?? 0 });
+      const role = n.is_slack ? "Slack bus" : NODE_KIND_LABEL[n.type];
+      const gens = formatGenTypes(n.gen_types);
+      const kindText = gens ? `${role} · ${gens}` : role;
+      if (n.state === "alert") out.push({ id: n.id, kind: "node", sev: "alert", label: labelOf(n), kindText, msg: `voltage ${n.vm_pu?.toFixed(3)} p.u. — limit breach`, val: n.vm_pu ?? 0 });
+      else if (n.state === "warn") out.push({ id: n.id, kind: "node", sev: "warn", label: labelOf(n), kindText, msg: `voltage ${n.vm_pu?.toFixed(3)} p.u. — near limit`, val: n.vm_pu ?? 0 });
     }
     out.sort((a, b) => (a.sev === b.sev ? b.val - a.val : a.sev === "alert" ? -1 : 1));
     return out;
   }, [frame, meta]);
 
   const nAlerts = alerts.filter((a) => a.sev === "alert").length;
+
+  // id -> override display label, for the server-computed N-1 / what-if results.
+  const labels = useMemo(() => buildLabelMap(frame.nodes, frame.lines), [frame]);
 
   // Wiring for the clickable element chips the agent emits in chat. Reuses the
   // same focus/select the rest of the sidebar uses; `has` enforces exact-match
@@ -184,8 +205,9 @@ export default function Sidebar({ frame, meta, selected, onFocus, onClearFocus, 
         kind === "node"
           ? frame.nodes.some((n) => n.id === id)
           : frame.lines.some((l) => l.id === id),
+      label: (_kind, id) => labels[id] ?? id,
     }),
-    [frame, onFocus, onSelect, onZoom],
+    [frame, labels, onFocus, onSelect, onZoom],
   );
 
   const TABS: [Tab, string, number][] = [
@@ -278,7 +300,11 @@ export default function Sidebar({ frame, meta, selected, onFocus, onClearFocus, 
             <TabsContent value="alerts" className="m-0 min-h-0 flex-1">
               <ScrollArea className="h-full">
                 <div className="p-3">
-                  <AlertsTab alerts={alerts} onPick={(id, kind) => { onFocus([id]); onSelect({ kind, id }); }} />
+                  <AlertsTab
+                    alerts={alerts}
+                    onPick={(id, kind) => { onFocus([id]); onSelect({ kind, id }); }}
+                    onZoom={(id, kind) => { onFocus([id]); onSelect({ kind, id }); onZoom(kind, id); }}
+                  />
                 </div>
               </ScrollArea>
             </TabsContent>
@@ -286,7 +312,7 @@ export default function Sidebar({ frame, meta, selected, onFocus, onClearFocus, 
             <TabsContent value="n1" className="m-0 min-h-0 flex-1">
               <ScrollArea className="h-full">
                 <div className="p-3">
-                  <N1Tab ts={frame.timestamp} onFocus={onFocus} onSelect={onSelect} />
+                  <N1Tab ts={frame.timestamp} labels={labels} onFocus={onFocus} onSelect={onSelect} />
                 </div>
               </ScrollArea>
             </TabsContent>
@@ -294,7 +320,7 @@ export default function Sidebar({ frame, meta, selected, onFocus, onClearFocus, 
             <TabsContent value="whatif" className="m-0 min-h-0 flex-1">
               <ScrollArea className="h-full">
                 <div className="p-3">
-                  <WhatIfTab frame={frame} onFocus={onFocus} onSelect={onSelect} />
+                  <WhatIfTab frame={frame} labels={labels} onFocus={onFocus} onSelect={onSelect} />
                 </div>
               </ScrollArea>
             </TabsContent>
@@ -317,26 +343,41 @@ export default function Sidebar({ frame, meta, selected, onFocus, onClearFocus, 
   );
 }
 
-function AlertsTab({ alerts, onPick }: { alerts: any[]; onPick: (id: string, kind: "line" | "node") => void }) {
+function AlertsTab({
+  alerts,
+  onPick,
+  onZoom,
+}: {
+  alerts: AlertRow[];
+  onPick: (id: string, kind: "line" | "node") => void;
+  onZoom: (id: string, kind: "line" | "node") => void;
+}) {
   if (!alerts.length)
     return <Note>No active alerts or warnings at this timestamp. The grid is within limits.</Note>;
   return (
     <>
-      <SectionTitle>{alerts.length} active conditions</SectionTitle>
+      <SectionTitle>{alerts.length} active conditions · double-click to zoom</SectionTitle>
       {alerts.map((a) => (
         <Item
           key={a.kind + a.id}
           onClick={() => onPick(a.id, a.kind)}
-          title={a.id}
+          onDoubleClick={() => onZoom(a.id, a.kind)}
+          title={a.label}
           pill={<Pill tone={a.sev}>{a.sev}</Pill>}
-          desc={a.msg}
+          desc={
+            <>
+              <span className="font-medium text-foreground/80">{a.kindText}</span>
+              {" — "}
+              {a.msg}
+            </>
+          }
         />
       ))}
     </>
   );
 }
 
-function N1Tab({ ts, onFocus, onSelect }: { ts: string; onFocus: (ids: string[]) => void; onSelect: (s: Selection) => void }) {
+function N1Tab({ ts, labels, onFocus, onSelect }: { ts: string; labels: Record<string, string>; onFocus: (ids: string[]) => void; onSelect: (s: Selection) => void }) {
   const [res, setRes] = useState<ContingencyResult[] | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -367,7 +408,7 @@ function N1Tab({ ts, onFocus, onSelect }: { ts: string; onFocus: (ids: string[])
               onFocus([r.contingency_id, ...r.overloaded.map((o) => o.id)]);
               onSelect({ kind: "line", id: r.contingency_id });
             }}
-            title={`trip ${r.contingency_name}`}
+            title={`trip ${labels[r.contingency_id] ?? r.contingency_name}`}
             pill={
               r.converged ? (
                 <Pill tone={r.max_loading_pct >= 100 ? "alert" : r.max_loading_pct >= 90 ? "warn" : "ok"}>
@@ -380,7 +421,7 @@ function N1Tab({ ts, onFocus, onSelect }: { ts: string; onFocus: (ids: string[])
             desc={
               r.converged
                 ? r.n_overloads > 0
-                  ? `${r.n_overloads} overloaded: ${r.overloaded.slice(0, 2).map((o) => `${o.name} ${o.loading_pct}%`).join(", ")}`
+                  ? `${r.n_overloads} overloaded: ${r.overloaded.slice(0, 2).map((o) => `${labels[o.id] ?? o.name} ${o.loading_pct}%`).join(", ")}`
                   : "no overloads — grid survives this contingency"
                 : "load flow does not converge — loss of supply / collapse"
             }
@@ -392,7 +433,7 @@ function N1Tab({ ts, onFocus, onSelect }: { ts: string; onFocus: (ids: string[])
 
 const NONE = "__none__";
 
-function WhatIfTab({ frame, onFocus, onSelect }: { frame: StateFrame; onFocus: (ids: string[]) => void; onSelect: (s: Selection) => void }) {
+function WhatIfTab({ frame, labels, onFocus, onSelect }: { frame: StateFrame; labels: Record<string, string>; onFocus: (ids: string[]) => void; onSelect: (s: Selection) => void }) {
   const [disc, setDisc] = useState<string>(NONE);
   const [scale, setScale] = useState(1.0);
   const [res, setRes] = useState<WhatIfResponse | null>(null);
@@ -430,7 +471,7 @@ function WhatIfTab({ frame, onFocus, onSelect }: { frame: StateFrame; onFocus: (
             <SelectItem value={NONE}>— none —</SelectItem>
             {lines.map((l) => (
               <SelectItem key={l.id} value={l.id}>
-                {l.name} ({l.loading_pct ?? 0}%)
+                {labelOf(l)} ({l.loading_pct ?? 0}%)
               </SelectItem>
             ))}
           </SelectContent>
@@ -468,7 +509,7 @@ function WhatIfTab({ frame, onFocus, onSelect }: { frame: StateFrame; onFocus: (
             <Item
               key={d.id}
               onClick={() => onSelect({ kind: "line", id: d.id })}
-              title={d.name}
+              title={labels[d.id] ?? d.name}
               pill={
                 <Pill tone={d.after >= 100 ? "alert" : d.after >= 90 ? "warn" : "ok"}>
                   {d.before}% → {d.after}%

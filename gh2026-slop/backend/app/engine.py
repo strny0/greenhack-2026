@@ -157,6 +157,7 @@ def extract_frame(net, timestamp: str, converged: bool) -> StateFrame:
                 is_slack=is_slack,
                 min_vm_pu=lo,
                 max_vm_pu=hi,
+                gen_types=store.bus_gen_types.get(bus_name, []) if idx in gen_by_bus else [],
                 vm_pu=round(vm, 4) if vm is not None else None,
                 vm_kv=round(vm * vn, 2) if vm is not None else None,
                 va_degree=round(va, 2) if va is not None else None,

@@ -259,7 +259,7 @@ export default function App() {
               zoomTo={zoomTo}
             />
           )}
-          <Legend />
+          <Legend showBusIcons={mode === "map"} />
           {(selectedNode || selectedLine) && (
             <DetailPanel
               node={selectedNode}

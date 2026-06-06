@@ -22,6 +22,9 @@ class Node(BaseModel):
     is_slack: bool
     min_vm_pu: float
     max_vm_pu: float
+    # generator fuel types at this bus, ranked by installed capacity (e.g.
+    # ["solar", "hydro"]); empty for buses with no generation.
+    gen_types: list[str] = []
     # dynamic
     vm_pu: Optional[float] = None
     vm_kv: Optional[float] = None

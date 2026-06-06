@@ -22,6 +22,8 @@ export interface GridRefCtx {
   jump: (kind: GridKind, id: string) => void;
   /** Whether the element exists in the current frame (else rendered as text). */
   has: (kind: GridKind, id: string) => boolean;
+  /** Operator-friendly display label for an element id (falls back to the id). */
+  label: (kind: GridKind, id: string) => string;
 }
 
 export const GridRefContext = createContext<GridRefCtx | null>(null);
@@ -108,13 +110,16 @@ function GridChip({ kind, id, children }: { kind: GridKind; id: string; children
   const ctx = useContext(GridRefContext);
   // Exact-match: only a real element in the current frame becomes a chip.
   if (!ctx || !ctx.has(kind, id)) return <>{children ?? id}</>;
+  // Prefer the operator-friendly override label over the raw id the model wrote.
+  const display = ctx.label(kind, id);
   return (
     <span
       // Double-click anywhere on the chip flies the camera to the element; a
       // single click just focuses/selects it (cheaper, no camera move).
       onDoubleClick={() => ctx.jump(kind, id)}
       className={cn(
-        "mx-px inline-flex items-center gap-1 rounded border pr-0.5 pl-1.5 align-baseline font-mono text-[0.82em] transition-colors",
+        "mx-px inline-flex items-center gap-1 rounded border pr-0.5 pl-1.5 align-baseline text-[0.82em] transition-colors",
+        display === id ? "font-mono" : "font-medium",
         "border-border bg-muted/60 text-foreground hover:border-ring hover:bg-accent",
       )}
     >
@@ -130,7 +135,7 @@ function GridChip({ kind, id, children }: { kind: GridKind; id: string; children
             kind === "node" ? "bg-sky-400" : "bg-emerald-400",
           )}
         />
-        {children ?? id}
+        {display}
       </button>
       <button
         type="button"

@@ -8,6 +8,8 @@ import {
   NODE_TYPE_COLOR,
   STATE_STROKE_COLOR,
 } from "./styling";
+import { formatGenTypes, iconCategoryForNode, labelOf, NODE_KIND_LABEL } from "@/lib/gridmeta";
+import { loadGridIcons } from "./mapIcons";
 
 export interface Selection {
   kind: "node" | "line";
@@ -56,7 +58,7 @@ function buildGeo(frame: StateFrame, highlight: Set<string>) {
           geometry: { type: "LineString" as const, coordinates: [a, b] },
           properties: {
             id: l.id,
-            name: l.name,
+            name: labelOf(l),
             kind: l.kind,
             loading: l.loading_pct ?? -1,
             inservice: l.in_service ? 1 : 0,
@@ -74,8 +76,11 @@ function buildGeo(frame: StateFrame, highlight: Set<string>) {
       geometry: { type: "Point" as const, coordinates: [n.lon, n.lat] },
       properties: {
         id: n.id,
-        name: n.name,
+        name: labelOf(n),
         type: n.type,
+        kind: n.is_slack ? "Slack bus" : NODE_KIND_LABEL[n.type],
+        gen: formatGenTypes(n.gen_types),
+        icon: iconCategoryForNode(n),
         state: n.state,
         mag: Math.max(n.production_mw, n.consumption_mw, 0),
         vm: n.vm_pu ?? 0,
@@ -135,8 +140,8 @@ export default function MapView({ frame, meta, highlight, selected, onSelect, zo
           "line-width": [
             "case",
             ["==", ["get", "kind"], "trafo"],
-            4,
-            ["interpolate", ["linear"], ["get", "loading"], 0, 4, 100, 8.5],
+            2.4,
+            ["interpolate", ["linear"], ["get", "loading"], 0, 2.4, 100, 5],
           ],
           "line-opacity": 0.7,
         },
@@ -158,8 +163,8 @@ export default function MapView({ frame, meta, highlight, selected, onSelect, zo
           "line-width": [
             "case",
             ["==", ["get", "kind"], "trafo"],
-            2.5,
-            ["interpolate", ["linear"], ["get", "loading"], 0, 2.6, 100, 6],
+            1.4,
+            ["interpolate", ["linear"], ["get", "loading"], 0, 1.4, 100, 3.4],
           ],
           "line-opacity": ["case", ["==", ["get", "inservice"], 0], 0.3, 1],
         },
@@ -171,7 +176,7 @@ export default function MapView({ frame, meta, highlight, selected, onSelect, zo
         source: "nodes",
         filter: ["==", ["get", "hl"], 1],
         paint: {
-          "circle-radius": ["+", ["interpolate", ["linear"], ["get", "mag"], 0, 6, 2000, 18], 8],
+          "circle-radius": ["+", ["interpolate", ["linear"], ["get", "mag"], 0, 11, 2000, 26], 9],
           "circle-color": "#ffd84d",
           "circle-opacity": 0.55,
         },
@@ -181,7 +186,7 @@ export default function MapView({ frame, meta, highlight, selected, onSelect, zo
         type: "circle",
         source: "nodes",
         paint: {
-          "circle-radius": ["interpolate", ["linear"], ["get", "mag"], 0, 4, 500, 9, 2000, 15],
+          "circle-radius": ["interpolate", ["linear"], ["get", "mag"], 0, 8, 500, 14, 2000, 24],
           "circle-color": [
             "match",
             ["get", "type"],
@@ -193,10 +198,10 @@ export default function MapView({ frame, meta, highlight, selected, onSelect, zo
           "circle-stroke-width": [
             "case",
             ["==", ["get", "state"], "alert"],
-            3,
+            4,
             ["==", ["get", "state"], "warn"],
-            2,
-            1,
+            3,
+            1.5,
           ],
           "circle-stroke-color": [
             "match",
@@ -209,59 +214,99 @@ export default function MapView({ frame, meta, highlight, selected, onSelect, zo
         },
       });
 
-      // selection ring
+      // Selection ring — scales with the bus so it always hugs the circle.
       map.addLayer({
         id: "node-selected",
         type: "circle",
         source: "nodes",
         filter: ["==", ["get", "id"], "__none__"],
         paint: {
-          "circle-radius": 18,
+          "circle-radius": ["+", ["interpolate", ["linear"], ["get", "mag"], 0, 8, 500, 14, 2000, 24], 6],
           "circle-color": "rgba(0,0,0,0)",
-          "circle-stroke-color": "#2f81f7",
-          "circle-stroke-width": 2.5,
+          "circle-stroke-color": "#3aa0ff",
+          "circle-stroke-width": 4,
         },
       });
+      // Bright halo drawn *beneath* the colored line (beforeId "lines") so the
+      // selected branch lights up without hiding its loading color.
+      map.addLayer(
+        {
+          id: "line-selected",
+          type: "line",
+          source: "lines",
+          filter: ["==", ["get", "id"], "__none__"],
+          layout: { "line-cap": "round" },
+          paint: { "line-color": "#3aa0ff", "line-width": 9, "line-opacity": 0.9, "line-blur": 0.4 },
+        },
+        "lines",
+      );
+
+      // Invisible, enlarged hit target around every bus: makes buses easy to
+      // grab and (via the query order below) gives them priority over lines.
       map.addLayer({
-        id: "line-selected",
-        type: "line",
-        source: "lines",
-        filter: ["==", ["get", "id"], "__none__"],
-        paint: { "line-color": "#2f81f7", "line-width": 6, "line-opacity": 0.5 },
+        id: "nodes-hit",
+        type: "circle",
+        source: "nodes",
+        paint: {
+          "circle-radius": ["+", ["interpolate", ["linear"], ["get", "mag"], 0, 8, 500, 14, 2000, 24], 11],
+          "circle-color": "#000000",
+          "circle-opacity": 0,
+        },
+      });
+
+      // Type glyphs (sun/leaf/droplet/…) drawn on top of the bus circles. The
+      // images load asynchronously, so add the symbol layer once they're ready.
+      loadGridIcons(map).then(() => {
+        if (!map.getLayer("node-icons") && map.getSource("nodes")) {
+          map.addLayer({
+            id: "node-icons",
+            type: "symbol",
+            source: "nodes",
+            layout: {
+              "icon-image": ["get", "icon"],
+              // Scale the glyph with the bus circle so it stays legible inside it.
+              "icon-size": ["interpolate", ["linear"], ["get", "mag"], 0, 0.62, 500, 0.9, 2000, 1.3],
+              "icon-allow-overlap": true,
+              "icon-ignore-placement": true,
+            },
+          });
+        }
       });
 
       ready.current = true;
 
+      const nodePopup = (p: any) =>
+        `<b>${p.name}</b><br/>${p.kind}${p.gen ? ` · ${p.gen}` : ""} · ${Number(p.vm).toFixed(3)} p.u.`;
+      const linePopup = (p: any) =>
+        `<b>${p.name}</b><br/>${p.loading < 0 ? "out of service" : Number(p.loading).toFixed(0) + "% loaded"}`;
+
       const popup = new maplibregl.Popup({ closeButton: false, closeOnClick: false, offset: 10 });
-      const enter = (label: (p: any) => string) => (e: any) => {
-        map.getCanvas().style.cursor = "pointer";
-        const f = e.features?.[0];
-        if (f) popup.setLngLat(e.lngLat).setHTML(label(f.properties)).addTo(map);
-      };
-      const leave = () => {
+      const clearPopup = () => {
         map.getCanvas().style.cursor = "";
         popup.remove();
       };
-      map.on("mouseenter", "nodes", enter((p) => `<b>${p.name}</b><br/>${p.type} · ${Number(p.vm).toFixed(3)} p.u.`));
-      map.on("mousemove", "nodes", (e: any) => {
-        const f = e.features?.[0];
-        if (f) popup.setLngLat(e.lngLat).setHTML(`<b>${f.properties.name}</b><br/>${f.properties.type} · ${Number(f.properties.vm).toFixed(3)} p.u.`);
-      });
-      map.on("mouseleave", "nodes", leave);
-      map.on("mouseenter", "lines", enter((p) => `<b>${p.name}</b><br/>${p.loading < 0 ? "out of service" : Number(p.loading).toFixed(0) + "% loaded"}`));
-      map.on("mousemove", "lines", (e: any) => {
-        const f = e.features?.[0];
-        if (f) popup.setLngLat(e.lngLat).setHTML(`<b>${f.properties.name}</b><br/>${f.properties.loading < 0 ? "out of service" : Number(f.properties.loading).toFixed(0) + "% loaded"}`);
-      });
-      map.on("mouseleave", "lines", leave);
+      // Buses win over lines: probe the enlarged bus hit area first, fall back to
+      // lines only when no bus is under the cursor.
+      const hitNode = (pt: maplibregl.PointLike) =>
+        map.queryRenderedFeatures(pt, { layers: ["nodes-hit"] })[0];
+      const hitLine = (pt: maplibregl.PointLike) =>
+        map.queryRenderedFeatures(pt, { layers: ["lines"] })[0];
 
-      map.on("click", "nodes", (e: any) => {
-        const f = e.features?.[0];
-        if (f) onSelect({ kind: "node", id: f.properties.id });
+      map.on("mousemove", (e) => {
+        const n = hitNode(e.point);
+        const l = n ? undefined : hitLine(e.point);
+        const f = n ?? l;
+        if (!f) return clearPopup();
+        map.getCanvas().style.cursor = "pointer";
+        popup.setLngLat(e.lngLat).setHTML((n ? nodePopup : linePopup)(f.properties)).addTo(map);
       });
-      map.on("click", "lines", (e: any) => {
-        const f = e.features?.[0];
-        if (f) onSelect({ kind: "line", id: f.properties.id });
+      map.on("mouseout", clearPopup);
+
+      map.on("click", (e) => {
+        const n = hitNode(e.point);
+        if (n) return onSelect({ kind: "node", id: n.properties!.id });
+        const l = hitLine(e.point);
+        if (l) onSelect({ kind: "line", id: l.properties!.id });
       });
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
