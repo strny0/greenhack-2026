@@ -38,11 +38,20 @@ fi
 
 EXTRACTED_DIR="${TOP_DIRS[0]}"
 
-# Replace existing dataset folder
-if [ -e "$DEST" ]; then
-    echo "Removing existing $DEST..."
-    rm -rf "$DEST"
-fi
-
-mv "$EXTRACTED_DIR" "$DEST"
+# Merge the downloaded payload into $DEST, preserving repo-tracked files such as
+# dataset/overrides/ (operator coordinate/label CSVs that are versioned here, not
+# shipped in the zip). Each top-level entry from the zip replaces its counterpart
+# in $DEST; "overrides" is never touched.
+mkdir -p "$DEST"
+shopt -s dotglob nullglob
+for entry in "$EXTRACTED_DIR"/*; do
+    name="$(basename "$entry")"
+    if [ "$name" = "overrides" ]; then
+        echo "Keeping existing $DEST/overrides (not overwritten)"
+        continue
+    fi
+    rm -rf "$DEST/$name"
+    mv "$entry" "$DEST/$name"
+done
+shopt -u dotglob nullglob
 echo "Dataset ready at: $DEST"

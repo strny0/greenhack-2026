@@ -41,13 +41,22 @@ try {
     }
     $extractedDir = $topDirs[0].FullName
 
-    # --- Replace existing dataset folder ---
-    if (Test-Path -LiteralPath $dest) {
-        Write-Host "Removing existing $dest..."
-        Remove-Item -LiteralPath $dest -Recurse -Force
+    # --- Merge payload into $dest, preserving repo-tracked files ---
+    # dataset/overrides/ holds operator coordinate/label CSVs that are versioned
+    # in the repo, not shipped in the zip. Each top-level entry from the zip
+    # replaces its counterpart in $dest; "overrides" is never touched.
+    New-Item -ItemType Directory -Force -Path $dest | Out-Null
+    foreach ($entry in Get-ChildItem -LiteralPath $extractedDir -Force) {
+        if ($entry.Name -eq 'overrides') {
+            Write-Host "Keeping existing $dest\overrides (not overwritten)"
+            continue
+        }
+        $target = Join-Path $dest $entry.Name
+        if (Test-Path -LiteralPath $target) {
+            Remove-Item -LiteralPath $target -Recurse -Force
+        }
+        Move-Item -LiteralPath $entry.FullName -Destination $target
     }
-
-    Move-Item -LiteralPath $extractedDir -Destination $dest
     Write-Host "Dataset ready at: $dest"
 }
 finally {
