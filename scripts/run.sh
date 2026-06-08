@@ -93,7 +93,19 @@ else
     green "backend/.env present"
 fi
 
-# --- 5. frontend deps --------------------------------------------------------
+# --- 5. gridstats bundle (built once via `python -m app.gridstats.build`) -----
+# Precomputed historical/statistical bundle the dispatcher agent serves from.
+# The build scans all 8760 snapshots, so do it once; presence of metrics.parquet
+# (what the runtime loader checks) means it's already built.
+GRIDSTATS_BUNDLE="$BACKEND/app/gridstats/target/metrics.parquet"
+if [ ! -f "$GRIDSTATS_BUNDLE" ]; then
+    cyan "building gridstats bundle (one-time; scans all snapshots — may take a few minutes)"
+    ( cd "$BACKEND" && "$VENV/bin/python" -m app.gridstats.build )
+else
+    green "gridstats bundle present"
+fi
+
+# --- 6. frontend deps --------------------------------------------------------
 if [ "${SKIP_INSTALL:-0}" != "1" ]; then
     if [ ! -d "$FRONTEND/node_modules" ] || [ "$FRONTEND/package-lock.json" -nt "$FRONTEND/node_modules" ]; then
         cyan "installing frontend deps (npm install)"
@@ -103,7 +115,7 @@ if [ "${SKIP_INSTALL:-0}" != "1" ]; then
     fi
 fi
 
-# --- 6. launch both ----------------------------------------------------------
+# --- 7. launch both ----------------------------------------------------------
 pids=()
 cleanup() {
     cyan "stopping..."

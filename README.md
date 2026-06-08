@@ -108,8 +108,14 @@ cd src/backend
 uv venv --python 3.12 .venv          # or: python3.12 -m venv .venv
 source .venv/bin/activate
 uv pip install -r requirements.txt   # or: pip install -r requirements.txt
+python -m app.gridstats.build        # one-time: precompute the gridstats bundle
 ./run.sh                             # http://127.0.0.1:8099
 ```
+
+The `app.gridstats.build` step scans all 8760 snapshots once and writes the
+precomputed bundle to `app/gridstats/target/` (the dispatcher agent serves from
+it). It only needs to run again if the dataset changes. The one-command
+`scripts/run.{sh,ps1}` does this automatically when the bundle is missing.
 
 #### 3. Frontend
 

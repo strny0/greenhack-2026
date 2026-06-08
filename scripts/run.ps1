@@ -99,7 +99,19 @@ if (-not (Test-Path $envFile)) {
     Green "backend\.env present"
 }
 
-# --- 5. frontend deps --------------------------------------------------------
+# --- 5. gridstats bundle (built once via `python -m app.gridstats.build`) -----
+# Precomputed historical/statistical bundle the dispatcher agent serves from.
+# The build scans all 8760 snapshots, so do it once; presence of metrics.parquet
+# (what the runtime loader checks) means it's already built.
+$bundle = Join-Path $backend 'app\gridstats\target\metrics.parquet'
+if (-not (Test-Path $bundle)) {
+    Cyan "building gridstats bundle (one-time; scans all snapshots — may take a few minutes)"
+    Push-Location $backend; try { & $venvPy -m app.gridstats.build } finally { Pop-Location }
+} else {
+    Green "gridstats bundle present"
+}
+
+# --- 6. frontend deps --------------------------------------------------------
 if (-not $SkipInstall) {
     $nodeModules = Join-Path $frontend 'node_modules'
     $lock = Join-Path $frontend 'package-lock.json'
@@ -113,7 +125,7 @@ if (-not $SkipInstall) {
     }
 }
 
-# --- 6. launch both ----------------------------------------------------------
+# --- 7. launch both ----------------------------------------------------------
 $procs = @()
 try {
     Cyan "starting backend  (uvicorn :$Port)"
