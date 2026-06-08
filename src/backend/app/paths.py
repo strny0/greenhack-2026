@@ -15,6 +15,7 @@ Both default under the repo-root ``dataset/`` that
 from __future__ import annotations
 
 import os
+from datetime import datetime
 from pathlib import Path
 
 # app/paths.py -> parents[3] is the repo root (app, backend, src, <repo>).
@@ -41,3 +42,21 @@ def overrides_dir() -> Path:
     """Resolve the operator overrides dir (``GRID_OVERRIDES_DIR`` or default)."""
     value = os.environ.get("GRID_OVERRIDES_DIR")
     return Path(value) if value else DEFAULT_OVERRIDES_DIR
+
+
+# --- Snapshot file naming ----------------------------------------------------
+# The hourly snapshot files are named like ``2024_01_01_12_00_00.json``. This is
+# the dataset's single on-disk naming convention, shared by the runtime loader
+# (app.data_loader) and the offline scanner (app.gridstats.loader).
+_SNAPSHOT_FMT = "%Y_%m_%d_%H_%M_%S"
+
+
+def parse_snapshot_ts(filename: str) -> str:
+    """``2024_01_01_12_00_00.json`` -> ISO ``2024-01-01T12:00:00``."""
+    stem = filename.removesuffix(".json")
+    return datetime.strptime(stem, _SNAPSHOT_FMT).isoformat()
+
+
+def snapshot_filename(timestamp: str) -> str:
+    """ISO ``2024-01-01T12:00:00`` -> ``2024_01_01_12_00_00.json`` (inverse)."""
+    return datetime.fromisoformat(timestamp).strftime(_SNAPSHOT_FMT) + ".json"

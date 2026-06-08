@@ -6,7 +6,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from app import paths
+from app import paths, thresholds
 
 _HERE = Path(__file__).resolve()
 
@@ -29,11 +29,8 @@ CACHE_DIR = TARGET_DIR / "cache"  # resumable scan checkpoints
 # Back-compat aliases used by the loader's offline scan paths.
 OUTPUT_DIR = TARGET_DIR
 
-# California bounding box (NREL-118 regions: r1=Bay Area, r2=Sacramento, r3=San Diego)
-LON_MIN, LON_MAX = -124.5, -114.5
-LAT_MIN, LAT_MAX =   32.5,   42.0
-
-# Alert thresholds (kept in sync with backend)
-LINE_LOADING_WARN  = 75.0
-LINE_LOADING_ALERT = 90.0
-VOLTAGE_WARN_MARGIN = 0.01
+# Alert thresholds — shared defaults from app.thresholds (no per-deployment env
+# tuning here; the bundle is built offline).
+LINE_LOADING_WARN   = thresholds.LINE_LOADING_WARN
+LINE_LOADING_ALERT  = thresholds.LINE_LOADING_ALERT
+VOLTAGE_WARN_MARGIN = thresholds.VOLTAGE_WARN_MARGIN

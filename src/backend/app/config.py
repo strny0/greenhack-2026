@@ -9,7 +9,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from . import paths
+from . import paths, thresholds
 
 load_dotenv()
 
@@ -37,15 +37,17 @@ PRELOAD_START = int(os.getenv("GRID_PRELOAD_START", "0"))
 # Max frames held in the lazy LRU cache.
 FRAME_CACHE_SIZE = int(os.getenv("GRID_FRAME_CACHE_SIZE", "800"))
 
-# --- Alert thresholds (single source of truth) ------------------------------
+# --- Alert thresholds -------------------------------------------------------
+# Defaults live in app.thresholds (shared with gridstats); GRID_* env vars tune
+# them for this running service.
 # Line loading (% of thermal rating).
-LINE_LOADING_WARN = float(os.getenv("GRID_LINE_LOADING_WARN", "75"))
-LINE_LOADING_ALERT = float(os.getenv("GRID_LINE_LOADING_ALERT", "90"))
+LINE_LOADING_WARN = float(os.getenv("GRID_LINE_LOADING_WARN", thresholds.LINE_LOADING_WARN))
+LINE_LOADING_ALERT = float(os.getenv("GRID_LINE_LOADING_ALERT", thresholds.LINE_LOADING_ALERT))
 # Bus voltage is judged against each bus's OWN rated band (min_vm_pu/max_vm_pu
 # from the dataset). A breach of the rated band is an alert; coming within this
 # per-unit margin of either limit is a warning. (This dataset runs near its
 # upper rated limit, so a global fixed band would be meaningless.)
-VOLTAGE_WARN_MARGIN = float(os.getenv("GRID_VOLTAGE_WARN_MARGIN", "0.01"))
+VOLTAGE_WARN_MARGIN = float(os.getenv("GRID_VOLTAGE_WARN_MARGIN", thresholds.VOLTAGE_WARN_MARGIN))
 
 # --- N-1 security analysis ---------------------------------------------------
 # A contingency is "critical" if it pushes any monitored element above this %.

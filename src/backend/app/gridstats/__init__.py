@@ -6,12 +6,14 @@ functions to it. Runtime serving uses ``GridStats.load()`` and never touches
 pandapower or the raw snapshots; the offline ``GridStats.build()`` produces the
 bundle.
 
-Separability: the only ``app.*`` dependency is ``app.paths`` — a tiny,
-stdlib-only, side-effect-free module shared with the main app so the dataset
-location is defined in exactly one place (see app/config.py). Lifting gridstats
-out as a standalone library means bringing that one leaf module along (or
-inlining its two functions). Otherwise this package depends only on
-pandas/numpy/statsmodels/pyarrow/tqdm/pandapower.
+Separability: the only ``app.*`` dependencies are three small modules shared
+with the main app so cross-cutting logic lives in exactly one place —
+``app.paths`` (dataset locations + the snapshot filename convention),
+``app.thresholds`` (alert threshold defaults), and ``app.snapshots`` (the
+``SnapshotIndex`` that discovers and deserializes the snapshot files; uses only
+pandapower, which this package already depends on). Lifting gridstats out as a
+standalone library means bringing those three along. Otherwise this package
+depends only on pandas/numpy/statsmodels/pyarrow/tqdm/pandapower.
 """
 from __future__ import annotations
 

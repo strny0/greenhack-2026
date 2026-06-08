@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import warnings
-from datetime import datetime
 from pathlib import Path
 
 warnings.filterwarnings("ignore")
@@ -19,19 +18,9 @@ warnings.filterwarnings("ignore")
 import pandas as pd
 import pandapower as pp
 
+from app.snapshots import SnapshotIndex
+
 from . import config
-from .geo import GeoProjector
-
-_SNAP_FMT = "%Y_%m_%d_%H_%M_%S"
-
-
-def _parse_ts(filename: str) -> str:
-    stem = filename.removesuffix(".json")
-    return datetime.strptime(stem, _SNAP_FMT).isoformat()
-
-
-def _ts_to_filename(ts: str) -> str:
-    return datetime.fromisoformat(ts).strftime(_SNAP_FMT) + ".json"
 
 
 def _read_jsonl(path: Path) -> list[dict]:
@@ -130,46 +119,15 @@ class DataStore:
 
     def __init__(self, data_dir: Path | None = None) -> None:
         self._data_dir = Path(data_dir) if data_dir else config.DATA_DIR
-        self._snapshots_dir = self._data_dir / "snapshots"
         self._static_dir = self._data_dir / "static"
 
-        self._timestamps: list[str] = []
-        self._file_by_ts: dict[str, str] = {}
-        self._projector: GeoProjector | None = None
-        self.bus_lonlat: dict[str, tuple[float, float]] = {}
+        # Snapshot discovery + deserialization is shared with the runtime app.
+        self._index = SnapshotIndex(self._data_dir / "snapshots")
         self.bus_renewable: dict[str, dict] = {}
 
-        self._discover()
-        self._init_projector()
         self._init_static()
         self._metrics_cache: pd.DataFrame | None = None
         self._branch_cache: pd.DataFrame | None = None
-
-    # --- discovery -----------------------------------------------------------
-
-    def _discover(self) -> None:
-        if not self._snapshots_dir.exists():
-            raise FileNotFoundError(f"Snapshots dir not found: {self._snapshots_dir}")
-        files = sorted(p.name for p in self._snapshots_dir.glob("*.json"))
-        for f in files:
-            try:
-                ts = _parse_ts(f)
-            except ValueError:
-                continue
-            self._timestamps.append(ts)
-            self._file_by_ts[ts] = f
-        if not self._timestamps:
-            raise RuntimeError("No snapshot files discovered.")
-
-    def _init_projector(self) -> None:
-        net = self.read_net(self._timestamps[0])
-        geo = net.bus_geodata
-        self._projector = GeoProjector(list(geo.x), list(geo.y))
-        for idx, row in net.bus.iterrows():
-            lon, lat = self._projector.to_lonlat(
-                float(geo.at[idx, "x"]), float(geo.at[idx, "y"])
-            )
-            self.bus_lonlat[str(row["name"])] = (round(lon, 5), round(lat, 5))
 
     def _init_static(self) -> None:
         gens_csv = self._static_dir / "gens.csv"
@@ -188,29 +146,18 @@ class DataStore:
             elif name.startswith("wind"):
                 entry["wind_mw"] += cap
 
-    # --- accessors -----------------------------------------------------------
+    # --- accessors (snapshot discovery/IO delegate to the shared index) -------
 
     @property
     def timestamps(self) -> list[str]:
-        return self._timestamps
-
-    @property
-    def projector(self) -> GeoProjector:
-        assert self._projector is not None
-        return self._projector
+        return self._index.timestamps
 
     def nearest_timestamp(self, ts: str) -> str:
-        if ts in self._file_by_ts:
-            return ts
-        target = datetime.fromisoformat(ts)
-        return min(self._timestamps, key=lambda t: abs((datetime.fromisoformat(t) - target).total_seconds()))
+        return self._index.nearest_timestamp(ts)
 
     def read_net(self, timestamp: str):
         """Deserialize snapshot into a fresh pandapower net (no load-flow re-run)."""
-        filename = self._file_by_ts.get(timestamp)
-        if filename is None:
-            raise KeyError(f"Unknown timestamp: {timestamp}")
-        return pp.from_json(str(self._snapshots_dir / filename))
+        return self._index.read_net(timestamp)
 
     # --- pre-solved metrics (no re-run) --------------------------------------
 
@@ -308,7 +255,7 @@ class DataStore:
         if resume and m_path.exists():
             done = {row["timestamp"] for row in _read_jsonl(m_path) if "timestamp" in row}
 
-        todo = [ts for ts in self._timestamps if ts not in done]
+        todo = [ts for ts in self._index.timestamps if ts not in done]
 
         if todo:
             workers = max(1, int(workers))
@@ -316,7 +263,7 @@ class DataStore:
             if progress:
                 from tqdm import tqdm
                 bar = tqdm(
-                    total=len(self._timestamps),
+                    total=len(self._index.timestamps),
                     initial=len(done),
                     desc="Scanning snapshots",
                     unit="snap",
@@ -327,7 +274,7 @@ class DataStore:
                 if workers > 1:
                     from concurrent.futures import ProcessPoolExecutor
                     tasks = [
-                        (str(self._snapshots_dir), self._file_by_ts[ts], ts)
+                        (str(self._index.snapshots_dir), self._index.file_by_ts[ts], ts)
                         for ts in todo
                     ]
                     chunksize = max(1, min(64, len(tasks) // (workers * 8) or 1))
@@ -505,8 +452,6 @@ if __name__ == "__main__":
     print("Loading DataStore …")
     ds = DataStore()
     print(f"  {len(ds.timestamps)} snapshots: {ds.timestamps[0]} → {ds.timestamps[-1]}")
-    lon, lat = ds.bus_lonlat["bus_001"]
-    print(f"  bus_001  lon={lon:.3f}  lat={lat:.3f}  (expect ~37-38°N, ~121-122°W)")
 
     print("Loading ForecastStore …")
     fs = ForecastStore()

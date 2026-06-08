@@ -4,7 +4,7 @@ dataset/
 !dataset/overrides/*.csv
 
 # gridstats precomputed bundle (built once via `python -m app.gridstats.build`)
-backend/app/gridstats/target/
+src/backend/app/gridstats/target/
 
 # Chat usage tracing log (runtime, per-deployment)
 chat_traces.jsonl
