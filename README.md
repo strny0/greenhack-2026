@@ -11,7 +11,7 @@ actionable situational awareness while operators work under time pressure.
 > See [`docs/Grid Pulse Challenge.pdf`](docs/Grid%20Pulse%20Challenge.pdf) for
 > the full challenge brief.
 
-The working application lives in **[`gh2026-slop/`](gh2026-slop/)**.
+The working application lives in **[`src/`](src/)**.
 
 ---
 
@@ -41,10 +41,10 @@ The working application lives in **[`gh2026-slop/`](gh2026-slop/)**.
 
 | Path | What it is |
 |------|------------|
-| [`gh2026-slop/`](gh2026-slop/) | **The application** — FastAPI + pandapower backend and a React / TypeScript / MapLibre frontend. See its [README](gh2026-slop/README.md). |
-| [`dataset/`](dataset/) | The ČEPS IEEE-118 dataset (8760 hourly pandapower snapshots, static network, forecasts, realtime feed) and its [schema docs](dataset/README.md). The `data/` payload is gitignored. |
+| [`src/`](src/) | **The application** — a FastAPI + pandapower backend ([`src/backend/`](src/backend/)) and a React / TypeScript / MapLibre frontend ([`src/frontend/`](src/frontend/)), plus [`src/deploy/`](src/deploy/) (rehost helper) and [`src/case_study/`](src/case_study/) (early loader prototype). |
+| [`dataset/`](dataset/) | The ČEPS IEEE-118 dataset. The `data/` payload (8760 hourly snapshots, static network, forecasts, realtime) is downloaded and gitignored; the version-controlled [`overrides/`](dataset/overrides/) hold operator coordinate/label CSVs and are preserved across dataset updates. |
 | [`docs/`](docs/) | Challenge brief (`Grid Pulse Challenge.pdf`), the source `NREL_IEEE_118.pdf`, and `dataset_schema.md`. |
-| [`scripts/`](scripts/) | Helpers to download the dataset (`download_dataset.sh` / `.ps1`) and a quick `analyze_datasets.py`. |
+| [`scripts/`](scripts/) | `download_dataset.{sh,ps1}` (fetch the dataset), `run.{sh,ps1}` (one-command local launch), and a quick `analyze_datasets.py`. |
 | [`src/case_study/`](src/case_study/) | Early data-exploration / loader prototype that fed the final design. |
 
 ---
@@ -66,49 +66,68 @@ frontend only ever sees the canonical `Node / Line / StateFrame` model.
 
 **Engine note:** the dataset is native pandapower (`pandapowerNet` JSON,
 IEEE-118-derived), so snapshots load with one call (`pp.from_json`), generators
-are preserved, and N-1 / what-if run natively. See
-[`gh2026-slop/README.md`](gh2026-slop/README.md) and `gh2026-slop/deliverables.txt`
-for the full rationale.
+are preserved, and N-1 / what-if run natively.
 
 ---
 
 ## Quickstart
 
-### 1. Data
+### One command (recommended)
 
-Download the dataset into `dataset/data/` (or set `GRID_DATA_DIR` to the inner
-`data/` directory):
+```bash
+./scripts/download_dataset.sh        # or scripts/download_dataset.ps1 on Windows
+./scripts/run.sh                     # or scripts/run.ps1 on Windows
+```
+
+`run.sh` is a reproducible launcher: it checks for `uv` (or Python 3.12) and
+Node/npm — printing exactly what's missing if a dependency isn't installed —
+sets up the backend virtualenv and frontend packages, creates
+`src/backend/.env` from the example on first run, then starts the backend
+(`:8099`) and the Vite dev server (`:5173`). Open **http://127.0.0.1:5173**;
+`Ctrl-C` stops both. Re-runs skip installs that are already up to date.
+
+### Manual setup
+
+#### 1. Data
+
+Download the dataset into `dataset/data/` (or set `GRID_DATA_DIR` to point at an
+inner `data/` directory elsewhere):
 
 ```bash
 ./scripts/download_dataset.sh        # or scripts/download_dataset.ps1 on Windows
 ```
 
-The backend expects `data/.../data/{snapshots,static,forecasts,realtime}`.
+The backend reads `dataset/data/{snapshots,static,forecasts,realtime}` by
+default and the version-controlled `dataset/overrides/` alongside it. The
+download merges the payload into `dataset/` without touching `overrides/`.
 
-### 2. Backend (Python 3.12)
+#### 2. Backend (Python 3.12)
 
 ```bash
-cd gh2026-slop/backend
+cd src/backend
 uv venv --python 3.12 .venv          # or: python3.12 -m venv .venv
 source .venv/bin/activate
 uv pip install -r requirements.txt   # or: pip install -r requirements.txt
 ./run.sh                             # http://127.0.0.1:8099
 ```
 
-### 3. Frontend
+#### 3. Frontend
 
 ```bash
-cd gh2026-slop/frontend
+cd src/frontend
 npm install
 npm run dev                          # http://127.0.0.1:5173
 ```
 
 Vite proxies `/api` to the backend, so just open **http://127.0.0.1:5173**.
 
-### 4. Chatbot (optional)
+#### 4. Chatbot (optional)
+
+The launcher copies `src/backend/.env.example` to `src/backend/.env` for you;
+for the manual path, do it yourself:
 
 ```bash
-cp gh2026-slop/backend/.env.example gh2026-slop/backend/.env
+cp src/backend/.env.example src/backend/.env
 # set AI_API_KEY (OpenAI-compatible, e.g. OpenRouter):
 #   AI_BASE_URL=https://openrouter.ai/api/v1
 #   AI_MODEL=anthropic/claude-sonnet-4.5
@@ -121,8 +140,7 @@ see exactly what the model would be given.
 
 ## API at a glance
 
-All endpoints are under `/api` (backend on `:8099`). Full `curl` tests for each
-are in [`gh2026-slop/deliverables.txt`](gh2026-slop/deliverables.txt).
+All endpoints are under `/api` (backend on `:8099`).
 
 | Endpoint | Purpose |
 |----------|---------|
