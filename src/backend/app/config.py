@@ -12,13 +12,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- Data location -----------------------------------------------------------
-# Points at the extracted ČEPS dataset's inner `data/` directory.
-_DEFAULT_DATA = (
-    Path(__file__).resolve().parents[2]
-    / "data"
-    / "greenhack-2026-ČEPS-dataset"
-    / "data"
-)
+# Points at the extracted ČEPS dataset's inner `data/` directory. The dataset is
+# downloaded by scripts/download_dataset.{sh,ps1} into the repo-root `dataset/`
+# folder; config.py is at src/backend/app/, so parents[3] is the repo root.
+# Override GRID_DATA_DIR if the dataset lives elsewhere.
+_DEFAULT_DATA = Path(__file__).resolve().parents[3] / "dataset" / "data"
 DATA_DIR = Path(os.getenv("GRID_DATA_DIR", str(_DEFAULT_DATA)))
 SNAPSHOTS_DIR = DATA_DIR / "snapshots"
 STATIC_DIR = DATA_DIR / "static"
