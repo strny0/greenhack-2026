@@ -13,6 +13,8 @@ actionable situational awareness while operators work under time pressure.
 
 The working application lives in **[`src/`](src/)**.
 
+![Grid Pulse — live California grid map with per-line loading, a node detail panel, and the dispatcher agent docked on the right](docs/screenshots/capabilities_1.png)
+
 ---
 
 ## What it does
@@ -37,13 +39,46 @@ The working application lives in **[`src/`](src/)**.
 
 ---
 
+## Screenshots
+
+The same system state, two ways — a geographic map or an engineer's single-line
+diagram — with the dispatcher agent docked on the right.
+
+![Schematic view — single-line diagram of the grid, with the agent's statistical and anomaly-detection tools](docs/screenshots/capabilities_2.png)
+
+<p align="center"><em>Schematic view: the same hour as a single-line diagram, alongside the agent's anomaly-detection and analysis tools.</em></p>
+
+### The dispatcher agent in action
+
+It reasons, calls the very same engine the UI uses (load flow, N-1, deep-dive
+statistics), and narrates **grounded** results — not free-form guesses.
+
+<table>
+  <tr>
+    <td width="50%" valign="top"><img src="docs/screenshots/chat_deepdive_question.png" alt="Asking for a deep dive plus a contingency analysis; the agent reasons, infers the current hour, and fans out tool calls"></td>
+    <td width="50%" valign="top"><img src="docs/screenshots/chat_deepdive_answer.png" alt="Deep-dive result: a system snapshot table and day-ahead-vs-actual plan deviation, each with z-scores"></td>
+  </tr>
+  <tr>
+    <td align="center"><em>Ask once — it infers the hour and fans out parallel tool calls.</em></td>
+    <td align="center"><em>…and returns a grounded deep-dive: snapshot + plan deviation, with z-scores.</em></td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="docs/screenshots/chat_contingency.png" width="660" alt="N-1 contingency analysis: a ranked table of tripped branches and a key takeaway naming the one critical, non-converging contingency">
+</p>
+
+<p align="center"><em>N-1 contingency analysis — every line tripped and ranked, with the one critical (non-converging) contingency called out.</em></p>
+
+---
+
 ## Repository layout
 
 | Path | What it is |
 |------|------------|
 | [`src/`](src/) | **The application** — a FastAPI + pandapower backend ([`src/backend/`](src/backend/)) and a React / TypeScript / MapLibre frontend ([`src/frontend/`](src/frontend/)), plus [`src/deploy/`](src/deploy/) (rehost helper) and [`src/case_study/`](src/case_study/) (early loader prototype). |
 | [`dataset/`](dataset/) | The ČEPS IEEE-118 dataset. The `data/` payload (8760 hourly snapshots, static network, forecasts, realtime) is downloaded and gitignored; the version-controlled [`overrides/`](dataset/overrides/) hold operator coordinate/label CSVs and are preserved across dataset updates. |
-| [`docs/`](docs/) | Challenge brief (`Grid Pulse Challenge.pdf`), the source `NREL_IEEE_118.pdf`, and `dataset_schema.md`. |
+| [`docs/`](docs/) | Challenge brief (`Grid Pulse Challenge.pdf`), the source `NREL_IEEE_118.pdf`, `dataset_schema.md`, and [`screenshots/`](docs/screenshots/). |
 | [`scripts/`](scripts/) | `download_dataset.{sh,ps1}` (fetch the dataset), `run.{sh,ps1}` (one-command local launch), and a quick `analyze_datasets.py`. |
 | [`src/case_study/`](src/case_study/) | Early data-exploration / loader prototype that fed the final design. |
 
@@ -82,9 +117,24 @@ are preserved, and N-1 / what-if run natively.
 `run.sh` is a reproducible launcher: it checks for `uv` (or Python 3.12) and
 Node/npm — printing exactly what's missing if a dependency isn't installed —
 sets up the backend virtualenv and frontend packages, creates
-`src/backend/.env` from the example on first run, then starts the backend
-(`:8099`) and the Vite dev server (`:5173`). Open **http://127.0.0.1:5173**;
-`Ctrl-C` stops both. Re-runs skip installs that are already up to date.
+`src/backend/.env` from the example on first run, builds the gridstats bundle
+once, then starts the backend (`:8099`) and the Vite dev server (`:5173`). Open
+**http://127.0.0.1:5173**; `Ctrl-C` stops both. Re-runs skip work already done.
+
+### Docker (single container)
+
+```bash
+docker compose -f docker/docker-compose.ghcr.yml up -d   # prebuilt image from GHCR
+# or build locally:
+docker compose -f docker/docker-compose.build.yml up --build
+# then open http://localhost:8099
+```
+
+One `uvicorn` process serves the API and the built UI. The image is lean; on
+first start the entrypoint downloads the dataset and builds the gridstats bundle
+into persistent volumes (so image updates never re-download them). See
+[`docker/README.md`](docker/README.md) for configuration, trace persistence, and
+the GitHub Actions → GHCR setup.
 
 ### Manual setup
 

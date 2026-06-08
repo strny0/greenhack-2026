@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 from . import config
 from .artifacts import save_bundle
@@ -19,6 +20,36 @@ from .loader import DataStore, ForecastStore, RealtimeStore
 from .stats import GridStatsBundle
 
 _BANNER_WIDTH = 64
+
+
+def _available_cpus() -> int:
+    """CPUs actually usable here — honouring container limits, not just the host.
+
+    ``os.cpu_count()`` reports the host's cores and ignores a Docker ``--cpus``
+    quota or a cpuset, so it over-subscribes in CI / constrained containers. We
+    check the cgroup v2 CPU quota and the scheduler affinity first.
+    """
+    try:  # cgroup v2 quota (Docker --cpus): "<quota> <period>" or "max <period>"
+        quota, period = Path("/sys/fs/cgroup/cpu.max").read_text().split()[:2]
+        if quota != "max":
+            n = int(int(quota) // int(period))
+            if n >= 1:
+                return n
+    except (OSError, ValueError):
+        pass
+    try:  # honours --cpuset-cpus / taskset
+        return len(os.sched_getaffinity(0))
+    except AttributeError:  # macOS / Windows
+        return os.cpu_count() or 2
+
+
+def _default_workers() -> int:
+    """Worker process count: ``GRIDSTATS_BUILD_WORKERS`` if set, else one fewer
+    than the available CPUs, capped at 8 (1 = serial)."""
+    override = os.environ.get("GRIDSTATS_BUILD_WORKERS")
+    if override:
+        return max(1, int(override))
+    return max(1, min(8, _available_cpus() - 1))
 
 
 def _banner(workers: int) -> str:
@@ -36,10 +67,10 @@ def _banner(workers: int) -> str:
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
 
-    # workers: CLI arg overrides; else default to (cores-1) capped at 8.
-    # 1 = serial. The parallel path needs this __main__ guard (Windows spawn).
-    default_workers = max(1, min(8, (os.cpu_count() or 2) - 1))
-    workers = int(argv[0]) if argv else default_workers
+    # workers precedence: CLI arg > GRIDSTATS_BUILD_WORKERS env > auto (CPUs-1,
+    # capped at 8, container-aware). 1 = serial. The parallel path needs this
+    # __main__ guard (Windows spawn).
+    workers = int(argv[0]) if argv else _default_workers()
 
     print(_banner(workers))
 

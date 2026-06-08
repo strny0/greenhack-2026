@@ -1,0 +1,28 @@
+# Build context = repo root. Keep it small and reproducible: the dataset payload
+# and the gridstats bundle are produced INSIDE the image, never copied from the
+# host, so local copies must not leak into the context.
+
+.git
+.github
+
+# Python / Node build artifacts
+**/.venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+src/frontend/node_modules
+src/frontend/dist
+src/frontend/tsconfig.tsbuildinfo
+src/backend/app/gridstats/target
+
+# Large, downloaded-in-image data (overrides/ IS kept — it is version-controlled)
+dataset/data
+
+# Local runtime / secrets
+**/.env
+**/chat_traces.jsonl
+**/uvicorn.log
+
+# Docs / misc not needed for the build
+docs
+**/*.md

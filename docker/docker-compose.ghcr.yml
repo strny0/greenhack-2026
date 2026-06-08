@@ -1,0 +1,35 @@
+# Run the prebuilt image from GitHub Container Registry — no local build.
+#
+#   docker compose -f docker/docker-compose.ghcr.yml up -d
+#
+# Open http://localhost:8099. `pull_policy: always` grabs the newest :latest
+# pushed by CI on every merge to main. (If the package is private, run
+# `docker login ghcr.io` first — see docker/README.md.)
+services:
+  gridpulse:
+    image: ghcr.io/strny0/greenhack-2026:latest
+    pull_policy: always
+    container_name: gridpulse
+    ports:
+      - "8099:8099"
+    environment:
+      AI_API_KEY: "${AI_API_KEY:-}"
+      AI_BASE_URL: "${AI_BASE_URL:-https://openrouter.ai/api/v1}"
+      AI_MODEL: "${AI_MODEL:-anthropic/claude-sonnet-4.5}"
+      GRID_ADMIN_TOKEN: "${GRID_ADMIN_TOKEN:-}"
+      # Cap the one-time gridstats build on a small host (default auto: CPUs-1,
+      # capped at 8, container-cpu-limit aware):
+      # GRIDSTATS_BUILD_WORKERS: "2"
+      # Any other GRID_* knob from src/backend/app/config.py works here too.
+    volumes:
+      # Heavy bits live in volumes (prepared once by the entrypoint), so a new
+      # :latest pull does NOT re-download the dataset or rebuild the bundle:
+      - gridpulse-data:/data/dataset          # ČEPS dataset payload (downloaded once)
+      - gridpulse-gridstats:/data/gridstats   # gridstats bundle (built once)
+      - gridpulse-traces:/data/traces         # chat_traces.jsonl
+    restart: unless-stopped
+
+volumes:
+  gridpulse-data:
+  gridpulse-gridstats:
+  gridpulse-traces:

@@ -1,0 +1,41 @@
+# Build the image locally from this repo, then run it.
+#
+#   docker compose -f docker/docker-compose.build.yml up --build
+#
+# Open http://localhost:8099  (one container serves the UI and the API).
+# First build downloads the dataset and builds the gridstats bundle, so it
+# takes a while; subsequent code-only rebuilds are fast (those layers cache).
+services:
+  gridpulse:
+    build:
+      context: ..                       # repo root (Dockerfile COPYs src/, dataset/overrides/)
+      dockerfile: docker/Dockerfile
+      # args:
+      #   DATASET_URL: https://cloud.jastr.dev/public.php/dav/files/greenhack-2026-data
+    image: gridpulse:local
+    container_name: gridpulse
+    ports:
+      - "8099:8099"                     # host:container — change the host side freely
+    environment:
+      # --- dispatcher chatbot (optional; without a key the chat just returns
+      #     the grounded grid context it would have sent the model) ---
+      AI_API_KEY: "${AI_API_KEY:-}"
+      AI_BASE_URL: "${AI_BASE_URL:-https://openrouter.ai/api/v1}"
+      AI_MODEL: "${AI_MODEL:-anthropic/claude-sonnet-4.5}"
+      # --- gate for GET /api/admin/traces (empty = endpoint disabled) ---
+      GRID_ADMIN_TOKEN: "${GRID_ADMIN_TOKEN:-}"
+      # --- any other GRID_* knob from src/backend/app/config.py works here too, e.g.: ---
+      # GRID_PRELOAD_FRAMES: "48"
+      # GRID_LINE_LOADING_ALERT: "90"
+    volumes:
+      # Heavy bits live in volumes (prepared once by the entrypoint), so they
+      # persist across restarts and image rebuilds and are never re-fetched:
+      - gridpulse-data:/data/dataset          # ČEPS dataset payload (downloaded once)
+      - gridpulse-gridstats:/data/gridstats   # gridstats bundle (built once)
+      - gridpulse-traces:/data/traces         # chat_traces.jsonl
+    restart: unless-stopped
+
+volumes:
+  gridpulse-data:
+  gridpulse-gridstats:
+  gridpulse-traces:
