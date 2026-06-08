@@ -4,7 +4,7 @@
 #   git pull && rebuild frontend (only if deps changed) && restart uvicorn
 #
 # Usage (from anywhere on pc-praha):
-#   ~/Projects/greenhack-2026/gh2026-slop/deploy/rehost.sh
+#   <repo>/src/deploy/rehost.sh
 #
 # Override defaults via env:
 #   HOST=0.0.0.0 PORT=8099 NO_PULL=1 ./rehost.sh
@@ -12,7 +12,7 @@ set -euo pipefail
 
 # --- paths -------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-APP="$(cd "$SCRIPT_DIR/.." && pwd)"          # .../gh2026-slop
+APP="$(cd "$SCRIPT_DIR/.." && pwd)"          # .../src
 BACKEND="$APP/backend"
 FRONTEND="$APP/frontend"
 VENV="$BACKEND/.venv"
@@ -21,9 +21,8 @@ HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8099}"
 LOG="$BACKEND/uvicorn.log"
 
-# Extracted ČEPS dataset's inner `data/` dir. config.py's default path doesn't
-# exist on this host, so point GRID_DATA_DIR at the real location (repo-root
-# dataset/data). Override GRID_DATA_DIR if the dataset lives elsewhere.
+# Dataset payload dir. config.py already defaults to repo-root dataset/data, so
+# GRID_DATA_DIR only needs setting if the dataset lives elsewhere on this host.
 REPO_ROOT="$(cd "$APP/.." && pwd)"
 export GRID_DATA_DIR="${GRID_DATA_DIR:-$REPO_ROOT/dataset/data}"
 

@@ -9,15 +9,16 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from . import paths
+
 load_dotenv()
 
 # --- Data location -----------------------------------------------------------
-# Points at the extracted ČEPS dataset's inner `data/` directory. The dataset is
-# downloaded by scripts/download_dataset.{sh,ps1} into the repo-root `dataset/`
-# folder; config.py is at src/backend/app/, so parents[3] is the repo root.
-# Override GRID_DATA_DIR if the dataset lives elsewhere.
-_DEFAULT_DATA = Path(__file__).resolve().parents[3] / "dataset" / "data"
-DATA_DIR = Path(os.getenv("GRID_DATA_DIR", str(_DEFAULT_DATA)))
+# Dataset paths come from the shared single-source-of-truth module (app.paths),
+# which both this config and the standalone app.gridstats.* use. DATA_DIR is the
+# downloaded/mounted payload (GRID_DATA_DIR); OVERRIDES_DIR is the small,
+# version-controlled operator CSVs that ship with the app (GRID_OVERRIDES_DIR).
+DATA_DIR = paths.data_dir()
 SNAPSHOTS_DIR = DATA_DIR / "snapshots"
 STATIC_DIR = DATA_DIR / "static"
 FORECASTS_DIR = DATA_DIR / "forecasts"
@@ -26,9 +27,7 @@ REALTIME_DIR = DATA_DIR / "realtime"
 FORECASTS_DA_SOLAR = FORECASTS_DIR / "DA" / "Solar"  # Solar1..75DA.csv -> solar_001..
 FORECASTS_DA_WIND = FORECASTS_DIR / "DA" / "Wind"    # Wind1..17DA.csv  -> wind_001..
 FORECASTS_DA_LOAD = FORECASTS_DIR / "DA" / "Load"    # LoadR1..3DA.csv  -> region r1..r3
-# Operator overrides (georef CSVs, labels, etc.) live alongside the dataset,
-# not inside it, so they survive dataset updates without being overwritten.
-OVERRIDES_DIR = DATA_DIR.parent / "overrides"
+OVERRIDES_DIR = paths.overrides_dir()
 
 # --- Frame cache / playback window ------------------------------------------
 # How many hourly frames to precompute at startup (the default "pulse" window).
