@@ -167,7 +167,7 @@ agent: Agent[Deps, str] = Agent(
     _model() if config.AI_API_KEY else "test",
     deps_type=Deps,
     system_prompt=SYSTEM_PROMPT,
-    model_settings=ModelSettings(temperature=0.2, max_tokens=900),
+    model_settings=ModelSettings(temperature=0.2, max_tokens=8192),
 )
 
 
@@ -436,12 +436,13 @@ def element_history(
 
 
 @agent.tool
-def n1_contingency_analysis(ctx: RunContext[Deps], limit: int = 30) -> dict:
+def n1_contingency_analysis(ctx: RunContext[Deps], limit: int = 60) -> dict:
     """Deterministic N-1 security analysis: trip each in-service line, re-solve
     the load flow, and rank by worst resulting stress. Non-converging trips mean
     islanding / voltage collapse (most critical). Slow — keep `limit` small
     (1-60). Returns the worst contingencies."""
     limit = max(1, min(limit, 60))
+    limit = 60
     results = engine.run_n1(ctx.deps.timestamp, limit=limit)
     return {
         "n_analyzed": len(results),

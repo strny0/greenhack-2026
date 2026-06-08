@@ -1,5 +1,22 @@
+import { useEffect, useState } from "react";
+import { ChevronDown } from "lucide-react";
 import type { IconCategory } from "@/lib/gridmeta";
 import { iconDataUrl } from "./mapIcons";
+
+/** Reactive media-query match (used to collapse the legend by default on mobile). */
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(() =>
+    typeof window !== "undefined" ? window.matchMedia(query).matches : true,
+  );
+  useEffect(() => {
+    const mql = window.matchMedia(query);
+    const onChange = () => setMatches(mql.matches);
+    onChange();
+    mql.addEventListener("change", onChange);
+    return () => mql.removeEventListener("change", onChange);
+  }, [query]);
+  return matches;
+}
 
 // Bus glyphs shown on the geographical map, paired with a human label.
 const ICON_LEGEND: [IconCategory, string][] = [
@@ -18,8 +35,27 @@ const ICON_LEGEND: [IconCategory, string][] = [
 ];
 
 export default function Legend({ showBusIcons = false }: { showBusIcons?: boolean }) {
+  const isMobile = useMediaQuery("(max-width: 767px)");
+  // Collapsed by default on mobile, expanded on desktop. Re-evaluates if the
+  // viewport crosses the breakpoint (e.g. device rotation).
+  const [open, setOpen] = useState(!isMobile);
+  useEffect(() => setOpen(!isMobile), [isMobile]);
+
   return (
     <div className="absolute left-3 top-3 z-10 max-w-[230px] rounded-lg border bg-card/90 p-3 text-[11px] shadow-md backdrop-blur">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex w-full items-center justify-between gap-2 text-[11px] uppercase text-muted-foreground"
+      >
+        <span>Legend</span>
+        <ChevronDown
+          className={`size-3.5 shrink-0 transition-transform ${open ? "rotate-180" : ""}`}
+        />
+      </button>
+      {open && (
+        <div className="mt-2">
       <h4 className="mb-1.5 text-[11px] uppercase text-muted-foreground">Line loading</h4>
       <div className="my-1 flex items-center gap-2">
         <span
@@ -60,6 +96,8 @@ export default function Legend({ showBusIcons = false }: { showBusIcons?: boolea
             ))}
           </div>
         </>
+      )}
+        </div>
       )}
     </div>
   );
