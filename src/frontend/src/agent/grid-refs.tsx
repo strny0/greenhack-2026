@@ -3,17 +3,28 @@ import { LocateFixedIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /**
- * Turns grid identifiers the agent writes in prose/tables (e.g. `bus_012`,
- * `branch_074_075_1`) into clickable chips that focus + open that element on the
- * map. Exact-match: a token only becomes a chip if it's a real element in the
- * current frame; otherwise it renders as plain text.
+ * Turns grid references the agent writes in prose/tables into clickable chips
+ * that focus + open that element on the map. Two forms are linkified:
+ *   - internal ids the model still emits (e.g. `bus_012`, `branch_074_075_1`);
+ *   - operator-facing DISPLAY NAMES the model now leads with (e.g.
+ *     "Milpitas Jct – Metcalf Energy Center"), matched against the labels of the
+ *     elements in the current frame. Longest match wins, so a branch label beats
+ *     the bus labels nested inside it.
+ * Either way a token only becomes a chip if it resolves to a real element.
  *
- *   - rehypeGridRefs: a rehype plugin that wraps candidate tokens as tagged <a>.
+ *   - rehypeGridRefs(refs): a rehype plugin that wraps candidate tokens as tagged <a>.
  *   - GridRefLink: the markdown <a> renderer; real refs -> <GridChip>, else text.
- * Wiring to the map (pick/has) comes from GridRefContext, set in AgentChat.
+ * Wiring to the map (pick/has/refs) comes from GridRefContext, set in Sidebar.
  */
 
 export type GridKind = "node" | "line";
+
+/** One linkable element in the current frame: its id and operator-facing label. */
+export interface GridRef {
+  kind: GridKind;
+  id: string;
+  label: string;
+}
 
 export interface GridRefCtx {
   /** Focus + select the element on the map. */
@@ -24,6 +35,8 @@ export interface GridRefCtx {
   has: (kind: GridKind, id: string) => boolean;
   /** Operator-friendly display label for an element id (falls back to the id). */
   label: (kind: GridKind, id: string) => string;
+  /** Every element in the current frame, so display-name mentions can be linkified. */
+  refs: GridRef[];
 }
 
 export const GridRefContext = createContext<GridRefCtx | null>(null);
@@ -35,8 +48,11 @@ const PREFIX_KIND: Record<string, GridKind> = {
   line: "line",
   trafo: "line",
 };
-const TOKEN_RE = /\b(bus|branch|line|trafo)_[A-Za-z0-9_]+/g;
+const ID_SRC = "(?:bus|branch|line|trafo)_[A-Za-z0-9_]+";
+const ID_PREFIX_RE = /^(bus|branch|line|trafo)_/;
 const EXACT_RE = /^(bus|branch|line|trafo)_[A-Za-z0-9_]+$/;
+// Labels shorter than this aren't linkified — too likely to collide with prose.
+const MIN_LABEL_LEN = 4;
 
 type HNode = {
   type: string;
@@ -46,16 +62,59 @@ type HNode = {
   children?: HNode[];
 };
 
-function splitText(value: string): HNode[] {
-  TOKEN_RE.lastIndex = 0;
+interface Matcher {
+  re: RegExp | null;
+  /** Resolved id + kind for a matched display-label string. */
+  byLabel: Map<string, { kind: GridKind; id: string }>;
+}
+
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Build one combined matcher for the current frame: internal ids *and* the
+ * display labels of every element. Labels are matched longest-first so a branch
+ * label ("A – B") wins over the bus labels nested inside it.
+ */
+function buildMatcher(refs: GridRef[]): Matcher {
+  const byLabel = new Map<string, { kind: GridKind; id: string }>();
+  for (const r of refs) {
+    const lbl = (r.label ?? "").trim();
+    if (!lbl || lbl === r.id || lbl.length < MIN_LABEL_LEN) continue;
+    if (!byLabel.has(lbl)) byLabel.set(lbl, { kind: r.kind, id: r.id });
+  }
+  const labels = [...byLabel.keys()].sort((a, b) => b.length - a.length);
+  // `\b` only guards the id alternative; labels carry their own (often multi-word)
+  // boundaries and may start/end with punctuation, so a word-boundary would miss them.
+  const parts = [`\\b${ID_SRC}`, ...labels.map(escapeRe)];
+  const re = parts.length ? new RegExp(parts.join("|"), "g") : null;
+  return { re, byLabel };
+}
+
+function splitText(value: string, matcher: Matcher): HNode[] {
+  const { re, byLabel } = matcher;
+  if (!re) return [{ type: "text", value }];
+  re.lastIndex = 0;
   const out: HNode[] = [];
   let last = 0;
   let m: RegExpExecArray | null;
-  while ((m = TOKEN_RE.exec(value))) {
+  while ((m = re.exec(value))) {
     const token = m[0];
-    const kind = PREFIX_KIND[m[1]];
+    const pm = ID_PREFIX_RE.exec(token);
+    let kind: GridKind;
+    let id: string;
+    if (pm) {
+      kind = PREFIX_KIND[pm[1]];
+      id = token;
+    } else {
+      const ref = byLabel.get(token);
+      if (!ref) continue; // shouldn't happen, but never emit an unresolved chip
+      kind = ref.kind;
+      id = ref.id;
+    }
     if (m.index > last) out.push({ type: "text", value: value.slice(last, m.index) });
-    out.push(gridAnchor(kind, token));
+    out.push(gridAnchor(kind, id, token));
     last = m.index + token.length;
   }
   if (out.length === 0) return [{ type: "text", value }];
@@ -63,21 +122,24 @@ function splitText(value: string): HNode[] {
   return out;
 }
 
-function gridAnchor(kind: GridKind, token: string): HNode {
+function gridAnchor(kind: GridKind, id: string, text: string): HNode {
   return {
     type: "element",
     tagName: "a",
-    properties: { className: ["grid-ref"], title: `${kind}:${token}` },
-    children: [{ type: "text", value: token }],
+    // title carries the resolved id; the visible text is whatever the model wrote
+    // (id or label) — GridChip re-derives the canonical label for display.
+    properties: { className: ["grid-ref"], title: `${kind}:${id}` },
+    children: [{ type: "text", value: text }],
   };
 }
 
 /**
- * rehype plugin: linkify grid identifiers. Handles plain text *and* inline code
- * (the model often wraps the headline id in backticks). Skips links and fenced
- * code blocks (<pre>).
+ * rehype plugin: linkify grid ids and display labels. Handles plain text *and*
+ * inline code (the model often wraps an id in backticks). Skips links and fenced
+ * code blocks (<pre>). Pass the current frame's `refs` so labels can be matched.
  */
-export function rehypeGridRefs() {
+export function rehypeGridRefs(refs: GridRef[] = []) {
+  const matcher = buildMatcher(refs);
   const walk = (node: HNode, skip: boolean) => {
     if (!node.children) return;
     const tag = node.type === "element" ? node.tagName : "";
@@ -88,13 +150,13 @@ export function rehypeGridRefs() {
         walk(child, childSkip);
         next.push(child);
       } else if (child.type === "text" && child.value) {
-        next.push(...splitText(child.value));
+        next.push(...splitText(child.value, matcher));
       } else if (child.type === "element" && child.tagName === "code") {
         // Inline code that is *exactly* one grid id -> swap the code box for a
         // chip; anything else is left as normal inline code.
         const text = child.children?.length === 1 ? child.children[0].value ?? "" : "";
-        const m = EXACT_RE.exec(text);
-        if (m) next.push(gridAnchor(PREFIX_KIND[m[1]], text));
+        const em = EXACT_RE.exec(text);
+        if (em) next.push(gridAnchor(PREFIX_KIND[em[1]], text, text));
         else next.push(child);
       } else {
         walk(child, childSkip);

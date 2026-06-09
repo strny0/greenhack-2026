@@ -103,6 +103,150 @@ def deep_dive(timestamp: str, override=None) -> dict:
     return _gs().deep_dive(timestamp, override=override)
 
 
+# (metric -> (dataframe attr, column)); "line_loading" handled specially.
+_TREND_METRICS = {
+    "load": ("realtime", "load_mw"),
+    "generation": ("realtime", "gen_total_mw"),
+    "solar": ("realtime", "solar_mw"),
+    "wind": ("realtime", "wind_mw"),
+    "max_loading": ("metrics", "max_line_loading_pct"),
+    "slack": ("metrics", "slack_mw"),
+    "line_loading": None,  # uses branch_loadings[element_id]
+}
+
+_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+_DOW = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+# granularity -> (pandas index attribute, label fn, expected bucket count or None)
+_GRANULARITIES = {
+    "month": ("month", lambda i: _MONTHS[i - 1]),
+    "week": ("isocalendar", lambda i: f"W{i:02d}"),  # special-cased below
+    "hour_of_day": ("hour", lambda i: f"{i:02d}h"),
+    "dow": ("dayofweek", lambda i: _DOW[i]),
+}
+
+
+def long_term_trends(
+    metric: str,
+    element_id: str | None = None,
+    granularity: str = "month",
+    current_ts: str | None = None,
+) -> dict:
+    """Compact long-term/seasonal trend of a grid metric over the full year.
+
+    Reads the precomputed full-year gridstats bundle (instant, no re-solve) and
+    buckets one metric by month/week/hour-of-day/day-of-week.
+
+    metric ∈ {load, generation, solar, wind, max_loading, slack, line_loading}
+      (line_loading needs element_id = a branch id).
+    granularity ∈ {month, week, hour_of_day, dow}.
+    current_ts: viewed hour, to locate "now" in the year's distribution.
+    Returns {metric, element_id, granularity, unit, span, buckets, overall, trend}.
+    Errors return {"error": "..."} (never raises).
+    """
+    import numpy as np
+    import pandas as pd
+
+    if metric not in _TREND_METRICS:
+        return {"error": f"unknown metric '{metric}'. Choose one of {sorted(_TREND_METRICS)}."}
+    if granularity not in _GRANULARITIES:
+        return {"error": f"unknown granularity '{granularity}'. Choose one of {sorted(_GRANULARITIES)}."}
+
+    b = _gs().bundle
+    unit = "%" if metric in ("max_loading", "line_loading") else "MW"
+
+    if metric == "line_loading":
+        if not element_id:
+            return {"error": "metric 'line_loading' requires an element_id (a branch id)."}
+        if element_id not in b.branch_loadings.columns:
+            return {"error": f"unknown element_id '{element_id}'. Not a branch in the bundle."}
+        series = b.branch_loadings[element_id]
+    else:
+        attr, col = _TREND_METRICS[metric]
+        df = getattr(b, attr)
+        if col not in df.columns:
+            return {"error": f"column '{col}' missing from bundle.{attr}."}
+        series = df[col]
+
+    series = pd.to_numeric(series, errors="coerce").dropna()
+    if series.empty:
+        return {"error": f"no data for metric '{metric}'."}
+
+    idx = series.index
+    if granularity == "week":
+        keys = idx.isocalendar().week.to_numpy()
+        label_fn = lambda i: f"W{int(i):02d}"
+    else:
+        key_attr, label_fn = _GRANULARITIES[granularity]
+        keys = getattr(idx, key_attr)
+
+    grouped = series.groupby(keys)
+    buckets = []
+    for k, vals in grouped:
+        buckets.append({
+            "bucket": label_fn(int(k)),
+            "mean": round(float(vals.mean()), 1),
+            "p95": round(float(vals.quantile(0.95)), 1),
+            "max": round(float(vals.max()), 1),
+        })
+
+    overall = {
+        "mean": round(float(series.mean()), 1),
+        "min": round(float(series.min()), 1),
+        "max": round(float(series.max()), 1),
+        "current": None,
+        "current_pct_rank": None,
+    }
+
+    if current_ts:
+        cur_val = _value_at(series, current_ts)
+        if cur_val is not None:
+            overall["current"] = round(float(cur_val), 1)
+            overall["current_pct_rank"] = int(round(float((series <= cur_val).mean()) * 100))
+
+    # trend = sign of least-squares slope across monthly means over the year.
+    monthly = series.groupby(idx.month).mean()
+    trend = "flat"
+    if len(monthly) >= 2:
+        x = np.asarray(monthly.index, dtype=float)
+        y = monthly.to_numpy(dtype=float)
+        slope = float(np.polyfit(x, y, 1)[0])
+        scale = abs(float(series.mean())) or 1.0
+        # treat a slope smaller than ~0.5% of the mean per month as flat.
+        if slope > 0.005 * scale:
+            trend = "rising"
+        elif slope < -0.005 * scale:
+            trend = "falling"
+
+    return {
+        "metric": metric,
+        "element_id": element_id if metric == "line_loading" else None,
+        "granularity": granularity,
+        "unit": unit,
+        "span": f"{idx[0].date()} .. {idx[-1].date()}",
+        "buckets": buckets,
+        "overall": overall,
+        "trend": trend,
+    }
+
+
+def _value_at(series, ts: str):
+    """Value of a series at the hour nearest ``ts``; None if out of range."""
+    import pandas as pd
+
+    try:
+        t = pd.Timestamp(ts)
+    except (ValueError, TypeError):
+        return None
+    if t < series.index[0] or t > series.index[-1]:
+        return None
+    pos = series.index.get_indexer([t], method="nearest")[0]
+    if pos < 0:
+        return None
+    return series.iloc[pos]
+
+
 def _records(df) -> list[dict]:
     """DataFrame → list of JSON-able dicts (index → ``date`` ISO string)."""
     out = []

@@ -30,9 +30,25 @@ app.add_middleware(
 )
 
 
+def _default_window() -> dict:
+    """Resolve the initial view from config.DEFAULT_VIEW_TS: the window starts at
+    that day's first frame and `idx` is the hour offset to land on within it. Falls
+    back to the legacy PRELOAD_START index if the configured day isn't in the set."""
+    times = store.timestamps
+    ts = config.DEFAULT_VIEW_TS
+    day = ts[:10]
+    start = next((i for i, t in enumerate(times) if t[:10] == day), None)
+    if start is None:
+        return {"start": config.PRELOAD_START, "count": config.PRELOAD_FRAMES, "idx": 0}
+    full = next((i for i, t in enumerate(times) if t == ts), None)
+    idx = max(0, full - start) if full is not None else 0
+    return {"start": start, "count": config.PRELOAD_FRAMES, "idx": idx}
+
+
 @app.on_event("startup")
 def _startup() -> None:
-    n = engine.preload(config.PRELOAD_START, config.PRELOAD_FRAMES)
+    dw = _default_window()
+    n = engine.preload(dw["start"], dw["count"])
     print(f"[grid-pulse] preloaded {n} frames; {len(store.timestamps)} snapshots available")
 
 
@@ -49,7 +65,7 @@ def meta() -> dict:
     return {
         "count": len(store.timestamps),
         "timestamps": store.timestamps,
-        "default_window": {"start": config.PRELOAD_START, "count": config.PRELOAD_FRAMES},
+        "default_window": _default_window(),
         "bbox": {
             "lon_min": config.LON_MIN,
             "lon_max": config.LON_MAX,

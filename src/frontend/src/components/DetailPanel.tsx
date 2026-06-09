@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
 import { LocateFixedIcon, X } from "lucide-react";
 import { api } from "../api";
-import type { GridLine, GridNode } from "../types";
+import type { GridLine, GridNode, State } from "../types";
 import { formatGenTypes, labelOf, NODE_KIND_LABEL } from "@/lib/gridmeta";
 
 interface Props {
@@ -19,6 +19,23 @@ interface Props {
 }
 
 const hhmm = (ts: string) => new Date(ts).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+
+/** Health badge — the operator's first question about any selected element. */
+const STATE_PILL: Record<State, { label: string; cls: string }> = {
+  ok: { label: "OK", cls: "bg-emerald-500/15 text-emerald-400" },
+  warn: { label: "Warning", cls: "bg-amber-500/15 text-amber-400" },
+  alert: { label: "Alert", cls: "bg-red-500/15 text-red-400" },
+  offline: { label: "Out of service", cls: "bg-slate-500/15 text-slate-400" },
+};
+
+function StatePill({ state }: { state: State }) {
+  const p = STATE_PILL[state] ?? STATE_PILL.ok;
+  return (
+    <span className={`inline-flex shrink-0 items-center rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${p.cls}`}>
+      {p.label}
+    </span>
+  );
+}
 
 function Row({ k, v }: { k: string; v: React.ReactNode }) {
   return (
@@ -71,11 +88,15 @@ export default function DetailPanel({ node, line, baseNode, baseLine, windowStar
           </button>
         )}
       </div>
+      {el && labelOf(el) !== el.id && (
+        <div className="-mt-0.5 mb-1.5 font-mono text-[10px] text-muted-foreground/70">{el.id}</div>
+      )}
 
       {node && (
         <>
-          <div className="mb-2 text-[11px] text-muted-foreground">
-            {node.is_slack ? "Slack bus" : NODE_KIND_LABEL[node.type]} · zone {node.zone} · {node.v_nominal_kv} kV
+          <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+            <StatePill state={node.state} />
+            <span>{node.is_slack ? "Slack bus" : NODE_KIND_LABEL[node.type]} · zone {node.zone} · {node.v_nominal_kv} kV</span>
           </div>
           {genTypes && (
             <div className="mb-2 text-[11px]">
@@ -93,18 +114,18 @@ export default function DetailPanel({ node, line, baseNode, baseLine, windowStar
           )}
           <div className="mb-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
             <Row k="Voltage" v={`${node.vm_pu?.toFixed(3) ?? "—"} p.u. (${node.vm_kv ?? "—"} kV)`} />
-            <Row k="Angle" v={`${node.va_degree ?? "—"}°`} />
+            <Row k="Rated band" v={`${node.min_vm_pu}–${node.max_vm_pu} p.u.`} />
+            <Row k="Net" v={`${node.net_mw} MW`} />
             <Row k="Production" v={`${node.production_mw} MW (${node.n_gens} gen)`} />
             <Row k="Consumption" v={`${node.consumption_mw} MW`} />
-            <Row k="Net" v={`${node.net_mw} MW`} />
-            <Row k="Rated band" v={`${node.min_vm_pu}–${node.max_vm_pu} p.u.`} />
           </div>
         </>
       )}
       {line && (
         <>
-          <div className="mb-2 text-[11px] text-muted-foreground">
-            {line.kind} · {line.from_node} → {line.to_node} {line.in_service ? "" : "· OUT OF SERVICE"}
+          <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+            <StatePill state={line.state} />
+            <span>{line.kind} · {line.from_node} → {line.to_node}</span>
           </div>
           {baseLine && baseLine.loading_pct != null && line.loading_pct != null && (
             <div className="mb-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px]">
@@ -120,10 +141,13 @@ export default function DetailPanel({ node, line, baseNode, baseLine, windowStar
           )}
           <div className="mb-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
             <Row k="Loading" v={`${line.loading_pct ?? "—"}%`} />
+            <Row
+              k="Headroom"
+              v={line.loading_pct != null ? `${Math.max(0, Math.round(100 - line.loading_pct))} pp` : "—"}
+            />
             <Row k="P from" v={`${line.p_from_mw ?? "—"} MW`} />
             <Row k="P to" v={`${line.p_to_mw ?? "—"} MW`} />
-            <Row k="Current" v={`${line.i_ka ?? "—"} kA`} />
-            <Row k="Rating" v={`${line.max_i_ka || "—"} kA`} />
+            <Row k="Current / rating" v={`${line.i_ka ?? "—"} / ${line.max_i_ka || "—"} kA`} />
           </div>
         </>
       )}

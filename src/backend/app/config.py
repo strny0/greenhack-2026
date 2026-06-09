@@ -32,8 +32,12 @@ OVERRIDES_DIR = paths.overrides_dir()
 # --- Frame cache / playback window ------------------------------------------
 # How many hourly frames to precompute at startup (the default "pulse" window).
 PRELOAD_FRAMES = int(os.getenv("GRID_PRELOAD_FRAMES", "48"))
-# Index of the first frame to preload (0 = first snapshot of the year).
+# Index of the first frame to preload (0 = first snapshot of the year). Used as a
+# fallback when DEFAULT_VIEW_TS is not present in the dataset.
 PRELOAD_START = int(os.getenv("GRID_PRELOAD_START", "0"))
+# The hour the app opens on by default (ISO). The window starts at this day's
+# 00:00 and the viewer lands on this hour. Resolved to indices in main._default_window.
+DEFAULT_VIEW_TS = os.getenv("GRID_DEFAULT_VIEW", "2024-09-05T19:00:00")
 # Max frames held in the lazy LRU cache.
 FRAME_CACHE_SIZE = int(os.getenv("GRID_FRAME_CACHE_SIZE", "800"))
 

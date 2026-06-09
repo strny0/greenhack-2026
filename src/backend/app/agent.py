@@ -15,7 +15,7 @@ emitted as `ui-action` stream events.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import AsyncIterator
 
 from pydantic_ai import Agent, RunContext
@@ -42,7 +42,8 @@ from . import config, engine, sandbox, weather
 from .data_loader import store
 from .gridstats import tools as _gst
 from .gridstats.overrides import HourActualsOverride
-from .model import ScenarioSpec, WhatIfRequest
+from .model import ScenarioSpec
+from .whatif_stack import Action, WhatIfStack, compose, has_actions
 
 # `OpenAIChatModel` is the chat-completions class (works with third-party
 # OpenAI-compatible gateways); older versions name it `OpenAIModel`.
@@ -64,13 +65,30 @@ Working style:
 - To follow connectivity ("what connects to this bus", tracing a corridor, \
 walking the grid), use bus_neighbors (raise hops to 2-3 for a wider view).
 - Be concise and operational: lead with the answer, then a one-line reason.
-- Use line/bus identifiers exactly as the tools return them.
+- Tools return TWO names per element: an internal `id` (e.g. bus_001, \
+branch_001_002_1) and a human `display_name` (e.g. "Oakland North Sub"). Always \
+pass the `id` back to other tools, but address elements by their display_name when \
+speaking to the operator (you may add the id in parentheses for precision). Buses \
+also carry `lat`/`lon`. Never invent ids or names — use exactly what the tools return.
 - For "vs yesterday / last week / earlier today" or "what changed" questions, use \
 compare_to (24h = yesterday, 168h = last week) and element_history with hours_back; \
 summary_at inspects any specific hour. If a tool reports the time is outside the \
 dataset, say so plainly rather than guessing.
 - N-1 and what-if tools re-solve the load flow and are slower — use them only when \
-the question is about contingencies or operator actions, and keep limits modest.
+the question is about contingencies or operator actions, and keep limits modest. N-1 \
+is computed for the currently viewed hour, so differences between hours are normal \
+(the grid is not "changing").
+- WHAT-IF SANDBOX (the `what_if` tool): build hypotheticals step by step and chain \
+them. Each call is one move — trip_line / trip_bus / scale_load — and moves STACK \
+on top of the grid you're viewing. After any move, the current-hour tools \
+(grid_summary, most_loaded_lines, line_detail, node_detail, bus_neighbors, \
+active_alerts, explain_hour, loading_context, deep_dive) all report the resulting \
+hypothetical grid, so explore it with those normal tools rather than guessing. Use \
+op="undo" to take back the last move and op="reset" to clear everything. The \
+historical/forward tools — n1_contingency_analysis, compare_to, summary_at, \
+element_history, plan_adherence, interesting_days, weather — always read the REAL \
+recorded grid and ignore the sandbox. ALWAYS reset the sandbox once you've answered, \
+and tell the operator clearly when a number describes a hypothetical vs the real grid.
 - Round sensibly, flag uncertainty, and state clearly when the data does not \
 support an answer.
 - For "is this unusual", "how does this compare to normal", "which days stood out", \
@@ -78,6 +96,8 @@ or "did the forecast hold" questions, use the statistical tools (explain_hour, \
 loading_context, plan_adherence, interesting_days, deep_dive). They read from a \
 precomputed seasonal bundle — no pandapower call, fast. Prefer explain_hour \
 (lightweight) over deep_dive unless a full breakdown is explicitly requested.
+- For "trend / seasonal / over the year / typical by month or hour" questions, use \
+long_term_trends (it reads the precomputed full-year bundle) instead of looping run_python.
 - When presenting statistical tool results, speak operationally — never quote \
 z-scores, σ values, or percentile ranks to the operator. Translate: a large z or \
 surprise_z → "significantly above/below forecast"; pct_rank 90/95/99 → "above its \
@@ -87,6 +107,20 @@ it is explicitly asked for.
 - When doing tool calls that require a timestamp, make sure to always re-fetch the current day \
 timestamp if the query applies to the current date - check just in case.
 - You are read-only: you advise, you do not switch equipment.
+
+Output discipline (a control-room console, not a chat toy):
+- Reply with the FINAL answer only. Never narrate your plan ("Let me pull…", \
+"Alright, here's…", "Let me check…") and never expose internal reasoning or scratch \
+text — the operator sees only your answer.
+- Never draw ASCII-art or box-drawing-character charts/sparklines. Present series as a \
+short markdown table or a sentence; the UI renders real charts.
+- Never surface σ, z-scores, surprise-z, or percentile-rank numbers to the operator — \
+not in prose and NOT as a table column. Translate them to plain operational language \
+(see the statistical-tools note below).
+- Keep a professional, concise, operational register. Do not gamify or celebrate \
+outages, and do not adopt jokey personas; a brief, plain, courteous tone is fine.
+- Identity: if asked which model/LLM you are or who built you, say only that you are \
+the Grid Pulse dispatcher assistant. Do not name, claim, or guess any model or vendor.
 
 Plan deviation / periodic safety check: use forecast_deviation_triage. It compares \
 the day-ahead plan to what actually happened and bundles the grid-security context. \
@@ -121,32 +155,43 @@ class Selection:
 @dataclass
 class Deps:
     """Per-request context: the hour the operator is viewing, whatever they
-    currently have selected on the map (if anything), and the active failure
-    simulation (if one is running for the loaded day)."""
+    currently have selected on the map (if anything), the active failure
+    simulation (if one is running for the loaded day), and the agent's own
+    chainable what-if sandbox (private to this turn, layered on top of the view)."""
 
     timestamp: str
     selection: Selection | None = None
     simulation: ScenarioSpec | None = None
+    whatif: WhatIfStack = field(default_factory=WhatIfStack)
+
+
+def _effective_spec(ctx: RunContext[Deps]) -> ScenarioSpec | None:
+    """The single source of truth for "which grid is the agent looking at":
+    the operator's active simulation folded together with the agent's what-if
+    stack. None means the real base grid (no re-solve needed)."""
+    spec = compose(ctx.deps.simulation, ctx.deps.whatif)
+    return spec if has_actions(spec) else None
 
 
 def _frame_for(ctx: RunContext[Deps]):
-    """The frame the operator is actually looking at: the scenario frame when a
-    failure simulation is active, otherwise the real base frame."""
-    sim = ctx.deps.simulation
-    if sim is not None:
-        return engine.scenario_frame(ctx.deps.timestamp, sim)
+    """The frame the operator is actually looking at, with any agent what-ifs
+    applied on top: the scenario frame when a simulation and/or sandbox action is
+    active, otherwise the real base frame."""
+    spec = _effective_spec(ctx)
+    if spec is not None:
+        return engine.scenario_frame(ctx.deps.timestamp, spec)
     return engine.base_frame(ctx.deps.timestamp)
 
 
 def _hour_override(ctx: RunContext[Deps]) -> HourActualsOverride | None:
     """Scenario actuals for the current hour, for the statistical tools (so they
-    score the simulated grid against the real normal baseline). None when no
-    simulation is active."""
-    sim = ctx.deps.simulation
-    if sim is None:
+    score the hypothetical grid against the real normal baseline). None when no
+    simulation and no sandbox action is active."""
+    spec = _effective_spec(ctx)
+    if spec is None:
         return None
     ts = store.nearest_timestamp(ctx.deps.timestamp)
-    f = engine.scenario_frame(ts, sim)
+    f = engine.scenario_frame(ts, spec)
     s = f.summary
     return HourActualsOverride(
         timestamp=ts,
@@ -184,18 +229,24 @@ def _selection_context(ctx: RunContext[Deps]) -> str:
         if n is None:
             return ""
         return (
-            f"OPERATOR SELECTION: the operator currently has bus {n.id} selected on "
-            f"the map (type {n.type}, {n.v_nominal_kv} kV, voltage {n.vm_pu} p.u., "
-            f"net {n.net_mw} MW, state {n.state}). When they say 'this bus', 'this "
-            f"node', 'the selected one', or 'here' with no other id, they mean {n.id}."
+            f"OPERATOR SELECTION: the operator currently has bus {n.id} "
+            f'("{n.label or n.name}") selected on the map — type {n.type}, '
+            f"{n.v_nominal_kv} kV, located at lat {n.lat}, lon {n.lon}, voltage "
+            f"{n.vm_pu} p.u., net {n.net_mw} MW, state {n.state}. Call it "
+            f'"{n.label or n.name}" when speaking to the operator, but pass {n.id} to '
+            f"tools. When they say 'this bus', 'this node', 'the selected one', or "
+            f"'here' with no other id, they mean {n.id}."
         )
     l = next((x for x in f.lines if x.id == sel.id), None)
     if l is None:
         return ""
     return (
-        f"OPERATOR SELECTION: the operator currently has branch {l.id} selected on the "
-        f"map ({l.kind} {l.from_node}->{l.to_node}, loading {l.loading_pct}%, state "
-        f"{l.state}). When they say 'this line', 'this branch', 'the selected one', or "
+        f"OPERATOR SELECTION: the operator currently has branch {l.id} "
+        f'("{l.label or l.name}") selected on the map — {l.kind} from '
+        f"{_bus_name(l.from_node)} ({l.from_node}) to {_bus_name(l.to_node)} "
+        f"({l.to_node}), loading {l.loading_pct}%, state {l.state}. Call it "
+        f'"{l.label or l.name}" when speaking to the operator, but pass {l.id} to '
+        f"tools. When they say 'this line', 'this branch', 'the selected one', or "
         f"'it' with no other id, they mean {l.id}."
     )
 
@@ -224,11 +275,21 @@ def _simulation_context(ctx: RunContext[Deps]) -> str:
 # --- tools (all read-only) ---------------------------------------------------
 
 
+def _bus_name(bus_id: str) -> str:
+    """Operator-facing label for a bus id (e.g. bus_001 -> 'Oakland North Sub'),
+    falling back to the id when no override exists."""
+    return store.bus_labels.get(bus_id, bus_id)
+
+
 def _line_brief(l) -> dict:
     return {
         "id": l.id,
+        # operator-facing name; pass `id` (not this) back to other tools.
+        "display_name": l.label or l.name,
         "from": l.from_node,
+        "from_name": _bus_name(l.from_node),
         "to": l.to_node,
+        "to_name": _bus_name(l.to_node),
         "kind": l.kind,
         "loading_pct": l.loading_pct,
         "p_from_mw": l.p_from_mw,
@@ -240,8 +301,12 @@ def _line_brief(l) -> dict:
 def _node_brief(n) -> dict:
     return {
         "id": n.id,
+        # operator-facing name; pass `id` (not this) back to other tools.
+        "display_name": n.label or n.name,
         "type": n.type,
         "zone": n.zone,
+        "lat": n.lat,
+        "lon": n.lon,
         "v_nominal_kv": n.v_nominal_kv,
         "vm_pu": n.vm_pu,
         "production_mw": n.production_mw,
@@ -436,14 +501,16 @@ def element_history(
 
 
 @agent.tool
-def n1_contingency_analysis(ctx: RunContext[Deps], limit: int = 60) -> dict:
+def n1_contingency_analysis(ctx: RunContext[Deps]) -> dict:
     """Deterministic N-1 security analysis: trip each in-service line, re-solve
     the load flow, and rank by worst resulting stress. Non-converging trips mean
-    islanding / voltage collapse (most critical). Slow — keep `limit` small
-    (1-60). Returns the worst contingencies."""
-    limit = max(1, min(limit, 60))
-    limit = 60
-    results = engine.run_n1(ctx.deps.timestamp, limit=limit)
+    islanding / voltage collapse (most critical). Returns the worst contingencies.
+
+    Always analyzes EVERY in-service line (the result is complete and cached, so
+    repeat calls are instant); `limit` is ignored for the analysis. N-1 reflects
+    the currently viewed hour — differences between hours are normal, not the grid
+    "changing"."""
+    results = engine.run_n1(ctx.deps.timestamp)
     return {
         "n_analyzed": len(results),
         "worst": [
@@ -459,32 +526,120 @@ def n1_contingency_analysis(ctx: RunContext[Deps], limit: int = 60) -> dict:
     }
 
 
+def _whatif_envelope(ctx: RunContext[Deps]) -> dict:
+    """Compact base-vs-sandbox summary returned by every what_if op. Deliberately
+    small (capped alerts/movers) so a chained exploration stays cheap on context."""
+    stack = ctx.deps.whatif
+    base = engine.base_frame(ctx.deps.timestamp)
+    spec = _effective_spec(ctx)
+    out: dict = {"stack": stack.labels(), "n_actions": len(stack.actions)}
+    if spec is None:
+        out["status"] = "sandbox empty — tools read the real grid"
+        out["converged"] = base.summary.converged
+        out["max_loading_pct"] = {
+            "base": base.summary.max_loading_pct,
+            "now": base.summary.max_loading_pct,
+        }
+        out["new_alerts"] = []
+        return out
+
+    scen = engine.scenario_frame(ctx.deps.timestamp, spec)
+    base_alert_ids = {
+        a.element_id for a in engine.build_alerts(base) if a.severity == "alert"
+    }
+    new_alerts = [
+        a for a in engine.build_alerts(scen)
+        if a.severity == "alert" and a.element_id not in base_alert_ids
+    ]
+    base_by_id = {l.id: l for l in base.lines}
+    movers = []
+    for l in scen.lines:
+        b = base_by_id.get(l.id)
+        if b and l.loading_pct is not None and b.loading_pct is not None:
+            movers.append({
+                "id": l.id,
+                "before": b.loading_pct,
+                "after": l.loading_pct,
+                "delta": round(l.loading_pct - b.loading_pct, 1),
+            })
+    movers.sort(key=lambda d: -abs(d["delta"]))
+    out["converged"] = scen.summary.converged
+    out["max_loading_pct"] = {
+        "base": base.summary.max_loading_pct,
+        "now": scen.summary.max_loading_pct,
+    }
+    out["new_alerts"] = [
+        {"element_id": a.element_id, "message": a.message} for a in new_alerts[:5]
+    ]
+    out["top_movers"] = movers[:3]
+    if not scen.summary.converged:
+        out["warning"] = "load flow did NOT converge — likely islanding / voltage collapse."
+    return out
+
+
+def _apply_whatif(
+    ctx: RunContext[Deps], op: str, target: str | None, factor: float | None
+) -> dict:
+    """Pure logic for the what_if tool (no RunContext machinery), so it is unit
+    testable. Mutates ctx.deps.whatif and returns a compact envelope or an error."""
+    stack = ctx.deps.whatif
+    if op == "status":
+        return _whatif_envelope(ctx)
+    if op == "reset":
+        n = stack.reset()
+        return {**_whatif_envelope(ctx), "undone": n}
+    if op == "undo":
+        a = stack.undo()
+        return {**_whatif_envelope(ctx), "undone": a.display() if a else None}
+    if op in ("trip_line", "trip_bus"):
+        if not target:
+            return {"error": f"{op} needs a target id (e.g. a branch/bus id)."}
+        f = engine.base_frame(ctx.deps.timestamp)
+        if op == "trip_line":
+            el = next((l for l in f.lines if l.id == target), None)
+            if el is None:
+                return {"error": f"No branch '{target}'. Use most_loaded_lines for ids."}
+            stack.push(Action(op="trip_line", target=target,
+                              label=f"trip {el.label or el.name}"))
+        else:
+            el = next((n for n in f.nodes if n.id == target), None)
+            if el is None:
+                return {"error": f"No bus '{target}'. Use node_detail/most_loaded_lines for ids."}
+            stack.push(Action(op="trip_bus", target=target,
+                              label=f"trip {el.label or el.name}"))
+        return _whatif_envelope(ctx)
+    if op == "scale_load":
+        if not factor or factor <= 0:
+            return {"error": "scale_load needs a positive factor, e.g. 1.5."}
+        stack.push(Action(op="scale_load", factor=float(factor),
+                          label=f"load x{factor:g}"))
+        return _whatif_envelope(ctx)
+    return {"error": f"unknown op '{op}'. Use trip_line|trip_bus|scale_load|undo|reset|status."}
+
+
 @agent.tool
 def what_if(
     ctx: RunContext[Deps],
-    disconnect_lines: list[str] | None = None,
-    trip_nodes: list[str] | None = None,
-    load_scale: float = 1.0,
+    op: str,
+    target: str | None = None,
+    factor: float | None = None,
 ) -> dict:
-    """Apply operator actions and re-solve a real load flow: disconnect lines,
-    trip buses (drop their gens/loads), and/or scale all load by `load_scale`.
-    Returns the base vs scenario max loading, biggest movers, and new alerts."""
-    req = WhatIfRequest(
-        timestamp=ctx.deps.timestamp,
-        disconnect_lines=disconnect_lines or [],
-        trip_nodes=trip_nodes or [],
-        load_scale=load_scale,
-    )
-    r = engine.run_whatif(req)
-    return {
-        "converged": r.scenario.summary.converged,
-        "base_max_loading_pct": r.base.summary.max_loading_pct,
-        "scenario_max_loading_pct": r.scenario.summary.max_loading_pct,
-        "biggest_movers": r.diffs[:8],
-        "new_alerts": [
-            {"element_id": a.element_id, "message": a.message} for a in r.new_alerts
-        ],
-    }
+    """Stateful what-if SANDBOX you can chain and unwind. One call = one move:
+      • op="trip_line",  target=<branch id>   take a line out of service
+      • op="trip_bus",   target=<bus id>      drop a bus's gens & loads
+      • op="scale_load", factor=1.5           multiply all load
+      • op="undo"                             pop the last move
+      • op="reset"                            clear the whole sandbox
+      • op="status"                           re-report the current stack
+
+    Moves STACK on top of what the operator is viewing. After any move, ALL the
+    current-hour tools (grid_summary, most_loaded_lines, line_detail, node_detail,
+    bus_neighbors, active_alerts, explain_hour, loading_context, deep_dive) read
+    the HYPOTHETICAL grid — inspect it with those. Historical/N-1/forecast tools
+    keep reading the real recorded grid. Returns a compact stack + base-vs-now max
+    loading + new alerts + top movers. ALWAYS `reset` once you've answered, so a
+    later question describes the real grid again."""
+    return _apply_whatif(ctx, op, target, factor)
 
 
 @agent.tool
@@ -574,8 +729,8 @@ async def run_python(ctx: RunContext[Deps], code: str) -> dict:
     correlations, group-bys, or scanning the realtime time series.
 
     The script runs in a locked-down sandbox (separate process, CPU/memory caps,
-    no network, ~15s budget). These names are already defined — do NOT read files
-    or import anything to get the data; just use them:
+    no network, ~90s budget). These names are already defined — prefer them over
+    reading files yourself:
 
       pandas as `pd`, numpy as `np`
       Static tables (DataFrames):
@@ -584,8 +739,8 @@ async def run_python(ctx: RunContext[Deps], code: str) -> dict:
         gens[gen_name, bus_name, opt_category, max_p_mw, min_p_mw]
         loads[load_name, bus_name]
       The CURRENT viewed hour (solved load flow), as DataFrames:
-        nodes[id, type, zone, v_nominal_kv, vm_pu, production_mw, consumption_mw,
-              net_mw, state, ...]
+        nodes[id, type, zone, lat, lon, v_nominal_kv, vm_pu, production_mw,
+              consumption_mw, net_mw, state, ...]
         lines[id, from_node, to_node, kind, max_i_ka, loading_pct, p_from_mw,
               p_to_mw, i_ka, in_service, state]
         summary (dict), timestamp (str)
@@ -593,6 +748,17 @@ async def run_python(ctx: RunContext[Deps], code: str) -> dict:
         gen_dispatch(gen_name=None, start=None, end=None) -> DataFrame [datetime, p_mw, ...]
         load_demand(load_name=None, start=None, end=None) -> DataFrame
         fuel_prices() -> DataFrame (daily 2024, by region)
+      Precomputed gridstats bundle (a FULL YEAR of stats, instant — no re-solving):
+        gridstats(name) -> DataFrame, where name is one of: 'metrics'
+          [total_load_mw, total_gen_mw, slack_mw, max_line_loading_pct,
+           n_overloaded_lines] (datetime index), 'branch_loadings' (per-hour
+          loading_percent for every branch), 'forecast' & 'realtime' (day-ahead
+          plan vs actuals, aligned), 'residuals', 'branch_pct90/95/99' (normal
+          bands by hour×workday), 'interesting_days', 'baselines'.
+      Everything else (day-ahead per-unit forecasts, snapshots, fuel prices, the
+      coordinates table) is in `catalog` (a dict: key -> {path, fmt, columns,
+      description}); load any catalogued table with read_table(key). Inspect
+      `catalog` first if you're unsure where something lives.
 
     Return values: assign your answer to a variable named `result` (a number,
     dict, or small DataFrame) and/or `print()` it. Large DataFrames come back as
@@ -683,6 +849,29 @@ def deep_dive(ctx: RunContext[Deps], timestamp: str | None = None) -> dict:
     timestamp: ISO hour. Omit to use the viewed hour."""
     override = _hour_override(ctx) if timestamp is None else None
     return _gst.deep_dive(timestamp or ctx.deps.timestamp, override=override)
+
+
+@agent.tool
+def long_term_trends(
+    ctx: RunContext[Deps],
+    metric: str,
+    element_id: str | None = None,
+    granularity: str = "month",
+) -> dict:
+    """Long-term / seasonal trend of one metric over the FULL YEAR, bucketed.
+
+    Reads a precomputed full-year bundle (instant, no re-solve). Use for "trend /
+    seasonal / over the year / typical by month or hour" questions instead of run_python.
+
+    metric ∈ {load, generation, solar, wind, max_loading, slack, line_loading}
+      (line_loading needs element_id = a branch id).
+    granularity ∈ {month, week, hour_of_day, dow}.
+    Returns bucket means/p95/max, overall stats with where "now" ranks, and trend
+    (rising/falling/flat)."""
+    return _gst.long_term_trends(
+        metric, element_id=element_id, granularity=granularity,
+        current_ts=ctx.deps.timestamp,
+    )
 
 
 # --- streaming runner --------------------------------------------------------

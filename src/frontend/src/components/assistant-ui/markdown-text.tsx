@@ -9,19 +9,26 @@ import {
   useIsMarkdownCodeBlock,
 } from "@assistant-ui/react-markdown";
 import remarkGfm from "remark-gfm";
-import { type FC, memo, useState } from "react";
+import { type FC, memo, useContext, useMemo, useState } from "react";
 import { CheckIcon, CopyIcon } from "lucide-react";
 
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
-import { GridRefLink, rehypeGridRefs } from "@/agent/grid-refs";
+import { type GridRef, GridRefContext, GridRefLink, rehypeGridRefs } from "@/agent/grid-refs";
 import { highlightPython } from "@/agent/python-highlight";
 import { cn } from "@/lib/utils";
 
 const MarkdownTextImpl = () => {
+  // Feed the current frame's elements to the chip plugin so display-name mentions
+  // (not just raw ids) get linkified. Re-derives only when the frame's refs change.
+  const refs = useContext(GridRefContext)?.refs;
+  const rehypePlugins = useMemo<[typeof rehypeGridRefs, GridRef[]][]>(
+    () => [[rehypeGridRefs, refs ?? []]],
+    [refs],
+  );
   return (
     <MarkdownTextPrimitive
       remarkPlugins={[remarkGfm]}
-      rehypePlugins={[rehypeGridRefs]}
+      rehypePlugins={rehypePlugins}
       className="aui-md"
       components={defaultComponents}
     />

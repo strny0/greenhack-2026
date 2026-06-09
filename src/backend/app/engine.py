@@ -499,17 +499,40 @@ def build_alerts(frame: StateFrame) -> list[Alert]:
 # --- N-1 security analysis ---------------------------------------------------
 
 
+_n1_cache: "OrderedDict[str, list[ContingencyResult]]" = OrderedDict()
+
+
 def run_n1(timestamp: str, limit: int | None = None) -> list[ContingencyResult]:
-    """Trip each in-service line one at a time, re-solve, rank by stress."""
+    """Trip each in-service line one at a time, re-solve, rank by stress.
+
+    The N-1 sweep ALWAYS analyzes every in-service line (bounded only by
+    ``config.N1_MAX_CONTINGENCIES``, a safety ceiling well above the network's
+    line count) so the worst/islanding contingency is never missed. ``limit`` only
+    controls how many ranked results are RETURNED (``None`` → all). The full ranked
+    sweep is LRU-cached per snapshot timestamp, so every caller sees the same
+    deterministic result and repeat calls within a turn are instant.
+
+    N-1 reflects the currently viewed hour, so differences between hours are
+    normal (the grid is not "changing").
+    """
     ts = store.nearest_timestamp(timestamp)
+    cached = _n1_cache.get(ts)
+    if cached is not None:
+        _n1_cache.move_to_end(ts)
+        return cached if limit is None else cached[:limit]
+
     net = store.read_net(ts)
     if not _solve(net):
+        _n1_cache[ts] = []
+        if len(_n1_cache) > config.FRAME_CACHE_SIZE:
+            _n1_cache.popitem(last=False)
         return []
     name_by_idx = net.bus["name"].to_dict()  # noqa: F841 (kept for parity)
-    cap = limit or config.N1_MAX_CONTINGENCIES
+    # Analyze ALL in-service lines (relevance comes from the ranking, not from an
+    # arbitrary prefix); N1_MAX_CONTINGENCIES is only a runaway safety ceiling.
     line_ids = [
         idx for idx, r in net.line.iterrows() if bool(r["in_service"])
-    ][:cap]
+    ][: config.N1_MAX_CONTINGENCIES]
 
     results: list[ContingencyResult] = []
     for idx in line_ids:
@@ -559,7 +582,11 @@ def run_n1(timestamp: str, limit: int | None = None) -> list[ContingencyResult]:
 
     # rank: non-converged (islanding) first, then by worst resulting loading
     results.sort(key=lambda r: (r.converged, -r.max_loading_pct))
-    return results
+
+    _n1_cache[ts] = results
+    if len(_n1_cache) > config.FRAME_CACHE_SIZE:
+        _n1_cache.popitem(last=False)
+    return results if limit is None else results[:limit]
 
 
 # --- forecast-vs-actual deviation triage ------------------------------------
@@ -737,6 +764,8 @@ def assess_deviation(timestamp: str) -> dict:
     # forward fragility — only when it's worth the cost
     n1 = {"ran": False, "worst": []}
     if significant or grid_stressed:
+        # Full cached sweep (same deterministic result every caller sees);
+        # N1_DEV_LIMIT is a *return* cap, not an analysis cap.
         results = run_n1(ts, limit=config.N1_DEV_LIMIT)
         n1 = {
             "ran": True,
@@ -822,13 +851,36 @@ def _apply_scenario(net, disconnect_lines, trip_nodes, load_scale) -> None:
         net.load["q_mvar"] = net.load["q_mvar"] * load_scale
 
 
+_scenario_cache: "OrderedDict[tuple, StateFrame]" = OrderedDict()
+
+
+def _scenario_sig(timestamp: str, spec: ScenarioSpec) -> tuple:
+    """Hashable identity of a scenario at an hour: the solve is fully determined
+    by the snapshot + which lines/buses are out + the load scale."""
+    return (
+        store.nearest_timestamp(timestamp),
+        tuple(sorted(spec.disconnect_lines)),
+        tuple(sorted(spec.trip_nodes)),
+        round(spec.load_scale, 6),
+    )
+
+
 def scenario_frame(timestamp: str, spec: ScenarioSpec) -> StateFrame:
-    """Solved canonical frame for a snapshot with a scenario applied (not cached)."""
+    """Solved canonical frame for a snapshot with a scenario applied (LRU cached
+    on the scenario signature, so repeated reads of the same hypothetical are free)."""
+    key = _scenario_sig(timestamp, spec)
+    if key in _scenario_cache:
+        _scenario_cache.move_to_end(key)
+        return _scenario_cache[key]
     ts = store.nearest_timestamp(timestamp)
     net = store.read_net(ts)
     _apply_scenario(net, spec.disconnect_lines, spec.trip_nodes, spec.load_scale)
     converged = _solve(net)
-    return extract_frame(net, ts, converged)
+    frame = extract_frame(net, ts, converged)
+    _scenario_cache[key] = frame
+    if len(_scenario_cache) > config.FRAME_CACHE_SIZE:
+        _scenario_cache.popitem(last=False)
+    return frame
 
 
 def resolve_preset(preset: str, timestamp: str) -> ScenarioSpec:

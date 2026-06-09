@@ -141,6 +141,42 @@ def _build_namespace(job: dict) -> dict:
         """Daily 2024 fuel prices by region (coal / gas / biomass / ...)."""
         return pd.read_csv(paths["fuel_prices"])
 
+    # Full data catalog (where everything lives + what's in it), keyed by name.
+    # Lets a script discover the dataset & the precomputed gridstats bundle
+    # rather than guessing paths. See read_table / gridstats below.
+    catalog = {s["key"]: s for s in job.get("catalog", [])}
+
+    def read_table(key):
+        """Load any catalogued tabular source by key into a DataFrame (or dict for
+        JSON). Use `catalog` to see what's available. Huge time-series and whole
+        directories are not loadable this way — use the named helpers instead."""
+        src = catalog.get(key)
+        if src is None:
+            raise KeyError(f"unknown data key {key!r}; available: {sorted(catalog)}")
+        fmt, path = src["fmt"], src["path"]
+        if fmt == "parquet":
+            return pd.read_parquet(path)
+        if fmt == "json":
+            with open(path) as fh:
+                return json.load(fh)
+        if fmt == "csv":
+            if src.get("lazy"):
+                raise ValueError(
+                    f"{key} is a large time-series; use {src.get('helper') or 'a helper'} "
+                    "to filter it instead of read_table()."
+                )
+            return pd.read_csv(path)
+        raise ValueError(
+            f"{key} is a {fmt} ({path}); read individual files inside it directly."
+        )
+
+    def gridstats(name="metrics"):
+        """Read a table from the precomputed gridstats bundle by short name, e.g.
+        'metrics', 'branch_loadings', 'forecast', 'realtime', 'residuals',
+        'branch_pct90', 'interesting_days', 'baselines'. No re-solving — these are
+        a full year of stats, instant to read."""
+        return read_table(f"gs_{name}")
+
     ns: dict = {
         "__builtins__": __builtins__,  # full builtins; containment is the OS, not a denylist
         "pd": pd,
@@ -156,6 +192,9 @@ def _build_namespace(job: dict) -> dict:
         "gen_dispatch": gen_dispatch,
         "load_demand": load_demand,
         "fuel_prices": fuel_prices,
+        "catalog": catalog,
+        "read_table": read_table,
+        "gridstats": gridstats,
     }
     return ns
 

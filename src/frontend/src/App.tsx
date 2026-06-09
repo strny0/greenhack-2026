@@ -98,9 +98,12 @@ export default function App() {
     const apply = (w: StateFrame[]) => {
       setFrames(w);
       if (isInitial) {
-        // start at an interesting hour (evening peak ~18:00) if present
-        const peak = w.findIndex((f) => f.timestamp.endsWith("T18:00:00"));
-        setIdx(peak >= 0 ? peak : 0);
+        // Land on the backend's configured default hour; fall back to the evening
+        // peak (~18:00) if the meta didn't carry an explicit offset.
+        const want = meta.default_window.idx;
+        const target =
+          want != null ? want : w.findIndex((f) => f.timestamp.endsWith("T18:00:00"));
+        setIdx(Math.max(0, Math.min(target, w.length - 1)));
         initialLoad.current = false;
       } else {
         // aligned 24h days -> keeping idx keeps the same hour-of-day

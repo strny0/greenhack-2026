@@ -4,7 +4,7 @@ import type { ContingencyResult, Meta, PresetKey, ScenarioSpec, StateFrame, Weat
 import type { Selection } from "./MapView";
 import AgentChat from "./AgentChat";
 import { AgentRuntimeProvider } from "../agent/AgentRuntimeProvider";
-import type { GridRefCtx } from "../agent/grid-refs";
+import type { GridRef, GridRefCtx } from "../agent/grid-refs";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Slider } from "@/components/ui/slider";
@@ -199,6 +199,16 @@ export default function Sidebar({ frame, meta, agentTimestamp, selected, onFocus
   // id -> override display label, for the server-computed N-1 / what-if results.
   const labels = useMemo(() => buildLabelMap(frame.nodes, frame.lines), [frame]);
 
+  // Every element + its display label, so the chat can linkify display-name
+  // mentions (the agent now leads with names, not raw ids) into chips.
+  const refs = useMemo<GridRef[]>(
+    () => [
+      ...frame.nodes.map((n) => ({ kind: "node" as const, id: n.id, label: labelOf(n) })),
+      ...frame.lines.map((l) => ({ kind: "line" as const, id: l.id, label: labelOf(l) })),
+    ],
+    [frame],
+  );
+
   // Wiring for the clickable element chips the agent emits in chat. Reuses the
   // same focus/select the rest of the sidebar uses; `has` enforces exact-match
   // (only real elements in the current frame become chips).
@@ -218,8 +228,9 @@ export default function Sidebar({ frame, meta, agentTimestamp, selected, onFocus
           ? frame.nodes.some((n) => n.id === id)
           : frame.lines.some((l) => l.id === id),
       label: (_kind, id) => labels[id] ?? id,
+      refs,
     }),
-    [frame, labels, onFocus, onSelect, onZoom],
+    [frame, labels, refs, onFocus, onSelect, onZoom],
   );
 
   const TABS: [Tab, string, number][] = [
