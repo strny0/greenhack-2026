@@ -7,7 +7,7 @@ html { color-scheme: dark; }
 body {
   background: var(--background);
   color: var(--foreground);
-  font: 13px/1.4 "Inter", "Segoe UI", system-ui, sans-serif;
+  font: 15px/1.45 "Barlow", "Segoe UI", system-ui, sans-serif;
   overflow: hidden;
 }
 
@@ -63,7 +63,7 @@ body {
 
 /* Single-line diagram view (SldView). Light canvas with a dark-themed
    floating tooltip; pan/zoom cursors set inline by the component. */
-.sld-wrap { position: absolute; inset: 0; background: #f5f6f8; }
+.sld-wrap { position: absolute; inset: 0; background: #1a272e; }
 .sld-svg { width: 100%; height: 100%; display: block; cursor: grab; }
 .sld-svg.dragging { cursor: grabbing; }
 .sld-tooltip {
@@ -79,3 +79,26 @@ body {
   transform: translate(8px, 8px);
   z-index: 4;
 }
+
+/* Figures: condensed, tabular digits so columns line up and values don't
+   jitter as the hour plays. */
+.num { font-family: var(--font-num); font-variant-numeric: tabular-nums; }
+
+/* The diagram while a what-if is shown: hatched frame so a simulation is never
+   mistaken for the live grid. */
+.sim-frame { outline: 3px dashed var(--sim-border); outline-offset: -3px; }
+.sim-hatch {
+  background: repeating-linear-gradient(135deg, var(--sim-surface) 0 10px, #33201c 10px 20px);
+}
+
+/* Agent answers: readable at arm's length, bottom line first. The first
+   paragraph of every answer is the one-sentence conclusion (the backend prompt
+   asks for it), set larger so a glance is enough. */
+[data-slot="aui_assistant-message-content"] { font-size: 16px; line-height: 1.6; }
+[data-slot="aui_assistant-message-content"] .aui-md > .aui-md-p:first-child {
+  font-size: 19px;
+  line-height: 1.4;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+}
+.aui-user-message-content { font-size: 16px; }

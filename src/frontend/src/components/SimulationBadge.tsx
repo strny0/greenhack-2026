@@ -30,45 +30,42 @@ export default function SimulationBadge({
   const s = frame?.summary;
 
   return (
-    <div className="z-10 flex items-center gap-3 border-b border-amber-500/40 bg-amber-500/15 px-4 py-1.5 text-sm">
-      <Zap className="size-4 shrink-0 animate-pulse text-amber-500" />
-      <span className="shrink-0 font-semibold tracking-wide text-amber-600 dark:text-amber-300">
-        SIMULATION
-      </span>
+    <div role="status" className="sim-hatch z-10 flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-sim-border px-5 py-2 text-[15px]">
+      <Zap className="size-4 shrink-0 text-[#ee7a3b]" aria-hidden="true" />
+      <span className="shrink-0 font-semibold">Simulation, not live</span>
       <span className="truncate text-foreground/90">{spec.label}</span>
       {s && (
-        <span className="shrink-0 tabular-nums text-foreground/80">
-          · max line{" "}
+        <span className="num shrink-0 text-foreground/85">
+          Busiest line{" "}
           <span
             className={
               s.max_loading_pct >= 100
-                ? "font-semibold text-red-500"
+                ? "font-semibold text-destructive"
                 : s.max_loading_pct >= 90
-                  ? "font-semibold text-amber-600 dark:text-amber-400"
+                  ? "font-semibold text-[#ee7a3b]"
                   : "font-medium"
             }
           >
             {s.max_loading_pct}%
           </span>
           {s.n_alerts > 0 && (
-            <span className="ml-2 rounded-full bg-red-500 px-1.5 py-0.5 text-[11px] font-semibold text-white">
+            <span className="ml-2 rounded-full bg-destructive px-1.5 py-0.5 text-[12px] font-semibold text-[#172229]">
               {s.n_alerts} alert{s.n_alerts === 1 ? "" : "s"}
             </span>
           )}
         </span>
       )}
       {divTime && (
-        <span className="shrink-0 font-medium text-red-500">
-          · diverged at {divTime}
+        <span className="shrink-0 font-medium text-destructive">
+          No solution from {divTime}
         </span>
       )}
       <Button
-        variant="ghost"
         size="sm"
-        className="ml-auto h-7 shrink-0 gap-1 text-amber-700 hover:bg-amber-500/20 dark:text-amber-200"
+        className="ml-auto h-9 shrink-0 gap-1.5 bg-foreground px-3 text-[14px] font-semibold text-background hover:bg-foreground/90"
         onClick={onExit}
       >
-        <X className="size-3.5" /> Exit simulation
+        <X className="size-3.5" aria-hidden="true" /> Back to live
       </Button>
     </div>
   );

@@ -15,8 +15,8 @@ import { OUT_OF_SERVICE_COLOR } from "./styling";
 // Classic SLD palette — single dark color for all bus bars; equipment type is
 // communicated by the attached symbol (G in circle for generators, ↓ for loads,
 // two-coil glyph mid-branch for transformers).
-const BAR_COLOR = "#2d3a55";
-const SYMBOL_COLOR = "#1a2233";
+const BAR_COLOR = "#afc0c8";
+const SYMBOL_COLOR = "#d3d9d6";
 const SLACK_COLOR = "#b07cff";
 
 interface Props {
@@ -404,7 +404,7 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
         }}
         onDoubleClick={onDoubleClick}
       >
-        <rect x={initial.x} y={initial.y} width={initial.w * 10} height={initial.h * 10} fill="#f5f6f8" />
+        <rect x={initial.x} y={initial.y} width={initial.w * 10} height={initial.h * 10} fill="#1a272e" />
 
         {/* region groupings — dashed rounded rectangles + label */}
         <g style={{ pointerEvents: "none" }}>
@@ -418,7 +418,7 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
                 rx={16}
                 ry={16}
                 fill="none"
-                stroke="#8a99b0"
+                stroke="#4a5d67"
                 strokeWidth={1.5}
                 strokeDasharray="10 6"
                 strokeOpacity={0.65}
@@ -428,12 +428,12 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
                 y={r.y + 24}
                 fontSize={20}
                 fontWeight={700}
-                fill="#8a99b0"
+                fill="#7d8f98"
                 fillOpacity={0.7}
                 fontFamily="sans-serif"
                 letterSpacing={1.5}
               >
-                {`Region ${r.zone.toUpperCase()}`}
+                {`Region ${r.zone}`}
               </text>
             </g>
           ))}
@@ -468,7 +468,7 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
                 key={`h-${g.l.id}`}
                 d={g.d}
                 fill="none"
-                stroke="#ffd84d"
+                stroke="#8ed1c1"
                 strokeOpacity={0.7}
                 strokeWidth={14}
                 strokeLinecap="round"
@@ -532,7 +532,7 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
           <path
             d={selectedLineGeom.d}
             fill="none"
-            stroke="#2f81f7"
+            stroke="#e9ece6"
             strokeOpacity={0.55}
             strokeWidth={lineWidth(selectedLineGeom.l.loading_pct, selectedLineGeom.l.kind) + 8}
             strokeLinecap="round"
@@ -557,7 +557,7 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
                 width={len + 16}
                 height={BAR_THICKNESS + 16}
                 rx={4}
-                fill="#ffd84d"
+                fill="#8ed1c1"
                 fillOpacity={0.55}
               />
             );
@@ -621,8 +621,8 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
             const r = 5;
             return (
               <g key={`tr-${g.l.id}`} style={{ pointerEvents: "none" }}>
-                <circle cx={g.midX - r * 0.7} cy={g.midY} r={r} fill="#ffffff" stroke={SYMBOL_COLOR} strokeWidth={1.4} />
-                <circle cx={g.midX + r * 0.7} cy={g.midY} r={r} fill="#ffffff" stroke={SYMBOL_COLOR} strokeWidth={1.4} fillOpacity={0} />
+                <circle cx={g.midX - r * 0.7} cy={g.midY} r={r} fill="#1a272e" stroke={SYMBOL_COLOR} strokeWidth={1.4} />
+                <circle cx={g.midX + r * 0.7} cy={g.midY} r={r} fill="#1a272e" stroke={SYMBOL_COLOR} strokeWidth={1.4} fillOpacity={0} />
               </g>
             );
           })}
@@ -681,7 +681,7 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
                       cx={x}
                       cy={sy - 24}
                       r={8}
-                      fill={isSlack ? SLACK_COLOR : "#ffffff"}
+                      fill={isSlack ? SLACK_COLOR : "#1a272e"}
                       stroke={SYMBOL_COLOR}
                       strokeWidth={1.4}
                     />
@@ -692,7 +692,7 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
                       dominantBaseline="central"
                       fontSize={11}
                       fontWeight={700}
-                      fill={isSlack ? "#ffffff" : SYMBOL_COLOR}
+                      fill={isSlack ? "#1a272e" : SYMBOL_COLOR}
                       fontFamily="serif"
                     >
                       {isSlack ? "S" : "G"}
@@ -737,7 +737,7 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
                 height={BAR_THICKNESS + 8}
                 rx={3}
                 fill="none"
-                stroke="#2f81f7"
+                stroke="#e9ece6"
                 strokeWidth={2.5}
                 style={{ pointerEvents: "none" }}
               />

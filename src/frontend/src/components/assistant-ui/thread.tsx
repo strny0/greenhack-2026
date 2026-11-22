@@ -30,7 +30,6 @@ import {
   ErrorPrimitive,
   groupPartByType,
   MessagePrimitive,
-  SuggestionPrimitive,
   ThreadPrimitive,
   useAuiState,
   useThreadRuntime,
@@ -48,16 +47,18 @@ import {
   RefreshCwIcon,
   SquareIcon,
   Trash2Icon,
+  XIcon,
 } from "lucide-react";
 import type { FC } from "react";
+import { useAskContext } from "@/agent/ask-context";
 
 export const Thread: FC = () => {
   return (
     <ThreadPrimitive.Root
       className="aui-root aui-thread-root bg-background @container relative flex h-full flex-col"
       style={{
-        ["--thread-max-width" as string]: "44rem",
-        ["--composer-radius" as string]: "24px",
+        ["--thread-max-width" as string]: "48rem",
+        ["--composer-radius" as string]: "14px",
         ["--composer-padding" as string]: "10px",
       }}
     >
@@ -134,45 +135,80 @@ const ThreadScrollToBottom: FC = () => {
 };
 
 const ThreadWelcome: FC = () => {
+  const ctx = useAskContext();
   return (
     <div className="aui-thread-welcome-root my-auto flex grow flex-col">
-      <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-center">
-        <div className="aui-thread-welcome-message flex size-full flex-col justify-center px-4">
-          <h1 className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in fill-mode-both text-2xl font-semibold duration-200">
-            Feeling <span className="smooth-shimmer">smooth</span>, operator?
-          </h1>
-          <p className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in fill-mode-both text-muted-foreground text-xl delay-75 duration-200">
-            Let's keep the grid humming. What can I help with?
-          </p>
-        </div>
+      <div className="aui-thread-welcome-center flex w-full grow flex-col justify-center px-1 pb-6">
+        <h1 className="text-[28px] leading-tight font-bold tracking-[-0.015em]">
+          What do you want to know about the grid?
+        </h1>
+        <p className="text-muted-foreground mt-2 max-w-[56ch] text-base">
+          Ask what's happening, why, or what would happen if something trips.
+          Answers come from the live load flow{ctx ? ` at ${ctx.hourLabel}` : ""},
+          and anything I mention lights up on the diagram.
+        </p>
       </div>
       <ThreadSuggestions />
     </div>
   );
 };
 
-const ThreadSuggestions: FC = () => {
+/**
+ * What the next question will be about: the hour, the selected element (which
+ * the operator can drop), and an active simulation. Mirrors exactly what the
+ * runtime sends to the backend with each message.
+ */
+const ComposerContextRow: FC = () => {
+  const ctx = useAskContext();
+  if (!ctx) return null;
   return (
-    <div className="aui-thread-welcome-suggestions grid w-full gap-2 pb-4 @md:grid-cols-2">
-      <ThreadPrimitive.Suggestions>
-        {() => <ThreadSuggestionItem />}
-      </ThreadPrimitive.Suggestions>
+    <div className="flex flex-wrap items-center gap-1.5 px-1 text-[13px] text-muted-foreground">
+      <span>Asking about</span>
+      <span className="num rounded-md bg-muted px-2 py-0.5 text-foreground">{ctx.hourLabel}</span>
+      {ctx.selectionLabel && (
+        <span className="inline-flex items-center gap-0.5 rounded-md border border-agent-border bg-agent-surface py-0.5 pr-0.5 pl-2 text-foreground">
+          {ctx.selectionLabel}
+          <button
+            type="button"
+            onClick={ctx.clearSelection}
+            aria-label={`Stop asking about ${ctx.selectionLabel}`}
+            className="inline-flex size-5 items-center justify-center rounded text-muted-foreground hover:text-foreground"
+          >
+            <XIcon className="size-3" />
+          </button>
+        </span>
+      )}
+      {ctx.simulationLabel && (
+        <span className="rounded-md border border-sim-border bg-sim-surface px-2 py-0.5 text-foreground">
+          Simulation: {ctx.simulationLabel}
+        </span>
+      )}
     </div>
   );
 };
 
-const ThreadSuggestionItem: FC = () => {
+// Starter questions phrased the way an operator would ask them at the desk.
+const STARTERS = [
+  "What's the state of the grid right now?",
+  "Which lines are busiest, and why?",
+  "Any voltage problems I should know about?",
+  "What happens if the busiest line trips?",
+];
+
+const ThreadSuggestions: FC = () => {
+  const runtime = useThreadRuntime();
   return (
-    <div className="aui-thread-welcome-suggestion-display fade-in slide-in-from-bottom-2 animate-in fill-mode-both duration-200 nth-[n+3]:hidden @md:nth-[n+3]:block">
-      <SuggestionPrimitive.Trigger send asChild>
+    <div className="aui-thread-welcome-suggestions grid w-full gap-2 pb-4 @md:grid-cols-2">
+      {STARTERS.map((q) => (
         <Button
+          key={q}
           variant="ghost"
-          className="aui-thread-welcome-suggestion bg-background hover:bg-muted h-auto w-full flex-wrap items-start justify-start gap-1 rounded-3xl border px-4 py-3 text-start text-sm transition-colors @md:flex-col"
+          onClick={() => runtime.append(q)}
+          className="bg-card hover:bg-muted h-auto min-h-12 w-full justify-start rounded-xl border px-4 py-3 text-start text-[15px] font-normal whitespace-normal"
         >
-          <SuggestionPrimitive.Title className="aui-thread-welcome-suggestion-text-1 font-medium" />
-          <SuggestionPrimitive.Description className="aui-thread-welcome-suggestion-text-2 text-muted-foreground empty:hidden" />
+          {q}
         </Button>
-      </SuggestionPrimitive.Trigger>
+      ))}
     </div>
   );
 };
@@ -185,10 +221,11 @@ const Composer: FC = () => {
           data-slot="aui_composer-shell"
           className="bg-background focus-within:border-ring/75 focus-within:ring-ring/20 data-[dragging=true]:border-ring data-[dragging=true]:bg-accent/50 flex w-full flex-col gap-2 rounded-(--composer-radius) border p-(--composer-padding) transition-shadow focus-within:ring-2 data-[dragging=true]:border-dashed"
         >
+          <ComposerContextRow />
           <ComposerAttachments />
           <ComposerPrimitive.Input
-            placeholder="Send a message..."
-            className="aui-composer-input placeholder:text-muted-foreground/80 max-h-32 min-h-10 w-full resize-none bg-transparent px-1.75 py-1 text-sm outline-none"
+            placeholder="Ask what's happening, why, or what if"
+            className="aui-composer-input placeholder:text-muted-foreground/80 max-h-40 min-h-12 w-full resize-none bg-transparent px-1.75 py-1 text-base outline-none"
             rows={1}
             autoFocus
             aria-label="Message input"
@@ -212,7 +249,7 @@ const ComposerAction: FC = () => {
             type="button"
             variant="default"
             size="icon"
-            className="aui-composer-send size-8 rounded-full"
+            className="aui-composer-send size-10 rounded-[10px]"
             aria-label="Send message"
           >
             <ArrowUpIcon className="aui-composer-send-icon size-4" />
@@ -225,7 +262,7 @@ const ComposerAction: FC = () => {
             type="button"
             variant="default"
             size="icon"
-            className="aui-composer-cancel size-8 rounded-full"
+            className="aui-composer-cancel size-10 rounded-[10px]"
             aria-label="Stop generating"
           >
             <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />

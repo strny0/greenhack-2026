@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { ASK_EVENT } from "@/agent/ask-context";
 import { api } from "../api";
 import type { ContingencyResult, Meta, PresetKey, ScenarioSpec, StateFrame, WeatherPoint, WhatIfResponse } from "../types";
 import type { Selection } from "./MapView";
 import AgentChat from "./AgentChat";
-import { AgentRuntimeProvider } from "../agent/AgentRuntimeProvider";
 import type { GridRef, GridRefCtx } from "../agent/grid-refs";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -16,7 +16,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ChevronDownIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { buildLabelMap, formatGenTypes, labelOf, NODE_KIND_LABEL } from "@/lib/gridmeta";
 
@@ -30,31 +29,10 @@ interface AlertRow {
   val: number;
 }
 
-/** Reactive media-query match (used to branch the desktop / mobile layout). */
-function useMediaQuery(query: string): boolean {
-  const [matches, setMatches] = useState(() =>
-    typeof window !== "undefined" ? window.matchMedia(query).matches : true,
-  );
-  useEffect(() => {
-    const mql = window.matchMedia(query);
-    const onChange = () => setMatches(mql.matches);
-    onChange();
-    mql.addEventListener("change", onChange);
-    return () => mql.removeEventListener("change", onChange);
-  }, [query]);
-  return matches;
-}
-
 interface Props {
   frame: StateFrame;
   meta: Meta;
-  /**
-   * The currently-viewed snapshot timestamp, derived from `meta` (the selected
-   * day + hour) so it updates the *instant* the day changes — before the heavy
-   * window data finishes loading. Drives the agent's grid-state context.
-   */
-  agentTimestamp: string;
-  selected: Selection | null;
+  selected?: Selection | null;
   onFocus: (ids: string[]) => void;
   onClearFocus: () => void;
   onSelect: (s: Selection | null) => void;
@@ -126,51 +104,16 @@ const SectionTitle = ({ children }: { children: React.ReactNode }) => (
   <div className="mb-2 mt-1 text-[11px] uppercase tracking-wide text-muted-foreground">{children}</div>
 );
 
-const MIN_WIDTH = 320;
-const MAX_WIDTH = 720;
-const DEFAULT_WIDTH = 390;
-const WIDTH_KEY = "sidebar-width";
-
-export default function Sidebar({ frame, meta, agentTimestamp, selected, onFocus, onClearFocus, onSelect, onZoom, simulation, simLoading, simError, onActivateSim, onExitSim }: Props) {
-  // On phones the panel becomes a collapsible bottom sheet under the map; on
-  // desktop it's the resizable right rail. `mobileOpen` drives the sheet height.
-  const isDesktop = useMediaQuery("(min-width: 768px)");
-  // Default to the Chat tab everywhere — it's the primary surface for the demo.
+export default function Sidebar({ frame, meta, onFocus, onClearFocus, onSelect, onZoom, simulation, simLoading, simError, onActivateSim, onExitSim }: Props) {
+  // Chat is the default and primary surface; the other tabs are the operator's
+  // own tools for when they'd rather look than ask.
   const [tab, setTab] = useState<Tab>("chat");
-  const [mobileOpen, setMobileOpen] = useState(false);
-
-  // Operator-resizable panel. Width persists across reloads; the map area is
-  // flex-1 and reflows around whatever width we land on.
-  const [width, setWidth] = useState(() => {
-    const saved = Number(localStorage.getItem(WIDTH_KEY));
-    return saved >= MIN_WIDTH && saved <= MAX_WIDTH ? saved : DEFAULT_WIDTH;
-  });
-  const dragging = useRef(false);
-
-  const onResizeStart = useCallback((e: React.PointerEvent) => {
-    e.preventDefault();
-    dragging.current = true;
-  }, []);
-
+  // Asking from elsewhere (e.g. the diagram's detail card) brings the chat back.
   useEffect(() => {
-    const onMove = (e: PointerEvent) => {
-      if (!dragging.current) return;
-      // Handle sits on the panel's left edge, so width grows as the cursor moves left.
-      const next = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, window.innerWidth - e.clientX));
-      setWidth(next);
-    };
-    const onUp = () => {
-      if (!dragging.current) return;
-      dragging.current = false;
-      localStorage.setItem(WIDTH_KEY, String(width));
-    };
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-    return () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-    };
-  }, [width]);
+    const show = () => setTab("chat");
+    window.addEventListener(ASK_EVENT, show);
+    return () => window.removeEventListener(ASK_EVENT, show);
+  }, []);
 
   // client-side alerts (stay in sync with scrubber, no extra fetch)
   const alerts = useMemo(() => {
@@ -234,145 +177,93 @@ export default function Sidebar({ frame, meta, agentTimestamp, selected, onFocus
   );
 
   const TABS: [Tab, string, number][] = [
+    ["chat", "Ask", 0],
     ["alerts", "Alerts", nAlerts],
     ["n1", "N-1", 0],
     ["whatif", "What-if", 0],
     ["weather", "Weather", 0],
-    ["chat", "Chat", 0],
   ];
 
   return (
-    // The runtime provider is mounted once, above the tab body, so the agent
-    // conversation persists when the operator switches tabs.
-    <AgentRuntimeProvider timestamp={agentTimestamp || frame.timestamp} selection={selected} simulation={simulation?.spec ?? null}>
-      <aside
-        className={cn(
-          "relative flex flex-col bg-card",
-          isDesktop
-            ? "h-full shrink-0 border-l"
-            : "w-full shrink-0 border-t",
-        )}
-        style={
-          isDesktop
-            ? { width }
-            : { height: mobileOpen ? "60dvh" : undefined }
-        }
+    <section aria-label="Agent and tools" className="flex min-h-0 min-w-0 flex-1 flex-col bg-card">
+      <Tabs
+        value={tab}
+        onValueChange={(v) => {
+          setTab(v as Tab);
+          onClearFocus();
+        }}
+        className="flex min-h-0 flex-1 flex-col gap-0"
       >
-        {/* Desktop: drag handle on the left edge to resize the panel. */}
-        {isDesktop && (
-          <div
-            onPointerDown={onResizeStart}
-            className="absolute -left-1 top-0 z-10 h-full w-2 cursor-col-resize select-none transition-colors hover:bg-primary/30"
-            title="Drag to resize"
-          />
-        )}
-
-        {/* Mobile: grab bar that expands/collapses the bottom sheet. */}
-        {!isDesktop && (
-          <button
-            type="button"
-            onClick={() => setMobileOpen((o) => !o)}
-            aria-expanded={mobileOpen}
-            aria-label={mobileOpen ? "Collapse panel" : "Expand panel"}
-            className="flex w-full items-center justify-center border-b py-1.5 text-muted-foreground active:bg-accent"
-          >
-            <ChevronDownIcon
-              className={cn(
-                "size-4 transition-transform",
-                !mobileOpen && "rotate-180",
+        <TabsList className="h-auto w-full justify-start gap-1 rounded-none border-b bg-transparent px-3 py-0">
+          {TABS.map(([t, label, badge]) => (
+            <TabsTrigger
+              key={t}
+              value={t}
+              className="h-11 flex-none rounded-none border-0 border-b-2 border-transparent px-3 text-[15px] text-muted-foreground data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none"
+            >
+              {label}
+              {badge > 0 && (
+                <span className="num ml-1.5 inline-flex min-w-5 items-center justify-center rounded-full bg-destructive px-1 text-[12px] text-[#172229]">
+                  {badge}
+                </span>
               )}
-            />
-          </button>
-        )}
+            </TabsTrigger>
+          ))}
+        </TabsList>
 
-        <Tabs
-          value={tab}
-          onValueChange={(v) => {
-            setTab(v as Tab);
-            onClearFocus();
-            // tapping a tab on mobile also opens the sheet
-            if (!isDesktop) setMobileOpen(true);
-          }}
-          className="flex min-h-0 flex-1 flex-col gap-0"
-        >
-          <TabsList className="h-auto w-full justify-stretch gap-0 rounded-none border-b bg-transparent p-0">
-            {TABS.map(([t, label, badge]) => (
-              <TabsTrigger
-                key={t}
-                value={t}
-                className="flex-1 rounded-none border-0 border-b-2 border-transparent py-2.5 text-xs text-muted-foreground data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none"
-              >
-                {label}
-                {badge > 0 && (
-                  <span className="ml-1 inline-flex min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] text-white">
-                    {badge}
-                  </span>
-                )}
-              </TabsTrigger>
-            ))}
-          </TabsList>
+        <div className="flex min-h-0 flex-1 flex-col">
+          <TabsContent value="chat" className="m-0 min-h-0 flex-1">
+            <AgentChat grid={grid} onHighlight={onFocus} />
+          </TabsContent>
 
-          {/* On mobile the tab body is hidden until the sheet is expanded, so a
-              collapsed panel is just the grab bar + tab strip under the map. */}
-          <div
-            className={cn(
-              "flex min-h-0 flex-1 flex-col",
-              !isDesktop && !mobileOpen && "hidden",
-            )}
-          >
-            <TabsContent value="alerts" className="m-0 min-h-0 flex-1">
-              <ScrollArea className="h-full">
-                <div className="p-3">
-                  <AlertsTab
-                    alerts={alerts}
-                    onPick={(id, kind) => { onFocus([id]); onSelect({ kind, id }); }}
-                    onZoom={(id, kind) => { onFocus([id]); onSelect({ kind, id }); onZoom(kind, id); }}
-                  />
-                </div>
-              </ScrollArea>
-            </TabsContent>
+          <TabsContent value="alerts" className="m-0 min-h-0 flex-1">
+            <ScrollArea className="h-full">
+              <div className="mx-auto max-w-3xl p-4">
+                <AlertsTab
+                  alerts={alerts}
+                  onPick={(id, kind) => { onFocus([id]); onSelect({ kind, id }); }}
+                  onZoom={(id, kind) => { onFocus([id]); onSelect({ kind, id }); onZoom(kind, id); }}
+                />
+              </div>
+            </ScrollArea>
+          </TabsContent>
 
-            <TabsContent value="n1" className="m-0 min-h-0 flex-1">
-              <ScrollArea className="h-full">
-                <div className="p-3">
-                  <N1Tab ts={frame.timestamp} labels={labels} onFocus={onFocus} onSelect={onSelect} />
-                </div>
-              </ScrollArea>
-            </TabsContent>
+          <TabsContent value="n1" className="m-0 min-h-0 flex-1">
+            <ScrollArea className="h-full">
+              <div className="mx-auto max-w-3xl p-4">
+                <N1Tab ts={frame.timestamp} labels={labels} onFocus={onFocus} onSelect={onSelect} />
+              </div>
+            </ScrollArea>
+          </TabsContent>
 
-            <TabsContent value="whatif" className="m-0 min-h-0 flex-1">
-              <ScrollArea className="h-full">
-                <div className="p-3">
-                  <WhatIfTab
-                    frame={frame}
-                    labels={labels}
-                    onFocus={onFocus}
-                    onSelect={onSelect}
-                    simulation={simulation}
-                    simLoading={simLoading}
-                    simError={simError}
-                    onActivateSim={onActivateSim}
-                    onExitSim={onExitSim}
-                  />
-                </div>
-              </ScrollArea>
-            </TabsContent>
+          <TabsContent value="whatif" className="m-0 min-h-0 flex-1">
+            <ScrollArea className="h-full">
+              <div className="mx-auto max-w-3xl p-4">
+                <WhatIfTab
+                  frame={frame}
+                  labels={labels}
+                  onFocus={onFocus}
+                  onSelect={onSelect}
+                  simulation={simulation}
+                  simLoading={simLoading}
+                  simError={simError}
+                  onActivateSim={onActivateSim}
+                  onExitSim={onExitSim}
+                />
+              </div>
+            </ScrollArea>
+          </TabsContent>
 
-            <TabsContent value="weather" className="m-0 min-h-0 flex-1">
-              <ScrollArea className="h-full">
-                <div className="p-3">
-                  <WeatherTab />
-                </div>
-              </ScrollArea>
-            </TabsContent>
-
-            <TabsContent value="chat" className="m-0 min-h-0 flex-1">
-              <AgentChat grid={grid} />
-            </TabsContent>
-          </div>
-        </Tabs>
-      </aside>
-    </AgentRuntimeProvider>
+          <TabsContent value="weather" className="m-0 min-h-0 flex-1">
+            <ScrollArea className="h-full">
+              <div className="mx-auto max-w-3xl p-4">
+                <WeatherTab />
+              </div>
+            </ScrollArea>
+          </TabsContent>
+        </div>
+      </Tabs>
+    </section>
   );
 }
 

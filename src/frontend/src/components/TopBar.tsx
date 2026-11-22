@@ -13,8 +13,8 @@ interface Props {
   setIdx: (i: number) => void;
   playing: boolean;
   togglePlay: () => void;
-  mode: "map" | "sld";
-  onModeChange: (m: "map" | "sld") => void;
+  mode?: "map" | "sld";
+  onModeChange?: (m: "map" | "sld") => void;
   selectedDate: Date;
   dayBounds: { first: Date; last: Date };
   windowLoading: boolean;
@@ -44,19 +44,30 @@ function Kpi({
   tone?: "bad" | "warn";
 }) {
   return (
-    <div className="flex min-w-[72px] flex-col">
-      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
-        {label}
-      </span>
-      <span
+    <div className="flex flex-col">
+      <dt className="whitespace-nowrap text-[12px] text-muted-foreground">{label}</dt>
+      <dd
         className={cn(
-          "text-[15px] font-semibold tabular-nums",
-          tone === "bad" && "text-red-400",
-          tone === "warn" && "text-amber-400",
+          "num m-0 whitespace-nowrap text-[17px] font-medium",
+          tone === "bad" && "text-destructive",
+          tone === "warn" && "text-[#d9a441]",
         )}
       >
         {value}
-      </span>
+      </dd>
+    </div>
+  );
+}
+
+/** Wordmark: a pulse inside a ring, the grid's heartbeat. */
+function Brand() {
+  return (
+    <div className="flex items-center gap-2.5">
+      <svg width="26" height="26" viewBox="0 0 26 26" aria-hidden="true">
+        <circle cx="13" cy="13" r="11" fill="none" stroke="var(--primary)" strokeWidth="2" />
+        <path d="M3 13h5l2.5-5 5 10 2.5-5h5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+      </svg>
+      <span className="text-lg font-bold tracking-[-0.01em]">Smooth Operator</span>
     </div>
   );
 }
@@ -81,46 +92,10 @@ export default function TopBar({
 }: Props) {
   const s = frame.summary;
   return (
-    <header className="z-10 flex flex-wrap items-center gap-x-4 gap-y-2 border-b bg-card px-4 py-2">
-      <div className="flex items-center gap-2.5">
-        <div>
-          <h1 className="flex flex-col text-base font-semibold leading-tight tracking-wide">
-            <span className="smooth-shimmer inline-block">Smooth</span>
-            <span className="pl-5">Operator</span>
-          </h1>
-        </div>
-      </div>
+    <header className="z-10 flex flex-wrap items-center gap-x-6 gap-y-2 border-b bg-card px-5 py-2.5">
+      <Brand />
 
-      <div
-        className="flex overflow-hidden rounded-md border"
-        role="tablist"
-        aria-label="Visualization mode"
-      >
-        <Button
-          role="tab"
-          aria-selected={mode === "map"}
-          variant={mode === "map" ? "default" : "ghost"}
-          size="sm"
-          className="rounded-none border-0"
-          onClick={() => onModeChange("map")}
-          title="Map view"
-        >
-          🗺 Map
-        </Button>
-        <Button
-          role="tab"
-          aria-selected={mode === "sld"}
-          variant={mode === "sld" ? "default" : "ghost"}
-          size="sm"
-          className="rounded-none border-0"
-          onClick={() => onModeChange("sld")}
-          title="Schematic (single-line diagram) view"
-        >
-          ▦ Schematic
-        </Button>
-      </div>
-
-      <div className="hidden flex-1 gap-5 lg:flex">
+      <dl className="m-0 hidden flex-1 gap-5 lg:flex">
         <Kpi
           label="Generation"
           value={`${s.total_generation_mw.toLocaleString()} MW`}
@@ -131,7 +106,7 @@ export default function TopBar({
           value={`${s.slack_mw > 0 ? "+" : ""}${s.slack_mw} MW`}
         />
         <Kpi
-          label="Max line load"
+          label="Busiest line"
           value={`${s.max_loading_pct}%`}
           tone={
             s.max_loading_pct >= 90
@@ -142,18 +117,18 @@ export default function TopBar({
           }
         />
         <Kpi
-          label="Alerts"
-          value={`${s.n_alerts} / ${s.n_warnings}w`}
+          label="Alerts / warnings"
+          value={`${s.n_alerts} / ${s.n_warnings}`}
           tone={s.n_alerts > 0 ? "bad" : s.n_warnings > 0 ? "warn" : undefined}
         />
         <Kpi
-          label="Solver"
-          value={s.converged ? "converged" : "diverged"}
+          label="Load flow"
+          value={s.converged ? "Converged" : "No solution"}
           tone={s.converged ? undefined : "bad"}
         />
-      </div>
+      </dl>
 
-      <div className="flex w-full flex-wrap items-center gap-3 md:w-auto md:flex-nowrap md:min-w-[360px] md:flex-1 lg:min-w-[560px] lg:flex-none">
+      <div className="flex w-full flex-wrap items-center gap-3 md:w-auto md:flex-nowrap md:min-w-[360px] md:flex-1 lg:min-w-[440px] lg:flex-none">
         <Button
           variant="outline"
           size="icon"
@@ -180,8 +155,8 @@ export default function TopBar({
           value={[idx]}
           onValueChange={(v) => setIdx(v[0])}
         />
-        <span className="min-w-[150px] text-right tabular-nums">
-          {fmt(frame.timestamp)}
+        <span className="num min-w-[52px] text-right text-[18px] font-semibold" title={fmt(frame.timestamp)}>
+          {new Date(frame.timestamp).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
         </span>
       </div>
     </header>

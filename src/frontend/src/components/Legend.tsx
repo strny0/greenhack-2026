@@ -38,16 +38,17 @@ export default function Legend({ showBusIcons = false }: { showBusIcons?: boolea
   const isMobile = useMediaQuery("(max-width: 767px)");
   // Collapsed by default on mobile, expanded on desktop. Re-evaluates if the
   // viewport crosses the breakpoint (e.g. device rotation).
-  const [open, setOpen] = useState(!isMobile);
-  useEffect(() => setOpen(!isMobile), [isMobile]);
+  // The diagram shares the screen with the chat, so the legend starts folded.
+  const [open, setOpen] = useState(false);
+  useEffect(() => { if (isMobile) setOpen(false); }, [isMobile]);
 
   return (
-    <div className="absolute left-3 top-3 z-10 max-w-[230px] rounded-lg border bg-card/90 p-3 text-[11px] shadow-md backdrop-blur">
+    <div className="absolute left-3 top-3 z-10 max-w-[230px] rounded-lg border bg-card/90 p-3 text-[12px] shadow-md backdrop-blur">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        className="flex w-full items-center justify-between gap-2 text-[11px] uppercase text-muted-foreground"
+        className="flex w-full items-center justify-between gap-2 text-[13px] text-muted-foreground"
       >
         <span>Legend</span>
         <ChevronDown
@@ -56,15 +57,15 @@ export default function Legend({ showBusIcons = false }: { showBusIcons?: boolea
       </button>
       {open && (
         <div className="mt-2">
-      <h4 className="mb-1.5 text-[11px] uppercase text-muted-foreground">Line loading</h4>
+      <h4 className="mb-1.5 text-[12px] font-medium text-muted-foreground">Line loading</h4>
       <div className="my-1 flex items-center gap-2">
         <span
           className="h-1 w-[22px] rounded-sm"
-          style={{ background: "linear-gradient(90deg,#2ecc71,#9acd32,#f5b915,#ff7a45,#ff4d4f)" }}
+          style={{ background: "linear-gradient(90deg,#4f7891,#6f9bb3,#d9a441,#ee7a3b,#f0503c)" }}
         />
-        <span>0% → 110%+</span>
+        <span>0 to 110%+</span>
       </div>
-      <h4 className="mb-1.5 mt-2 text-[11px] uppercase text-muted-foreground">Nodes</h4>
+      <h4 className="mb-1.5 mt-2 text-[12px] font-medium text-muted-foreground">Nodes</h4>
       {[
         ["#2f81f7", "Generation"],
         ["#e8833a", "Load"],
@@ -77,6 +78,10 @@ export default function Legend({ showBusIcons = false }: { showBusIcons?: boolea
         </div>
       ))}
       <div className="my-1 flex items-center gap-2">
+        <span className="h-2 w-5 rounded-full" style={{ background: "rgba(142,209,193,.45)" }} />
+        Mentioned by the agent
+      </div>
+      <div className="my-1 flex items-center gap-2">
         <span
           className="h-2.5 w-2.5 rounded-full"
           style={{ background: "#1a2233", border: "2px solid #ff4d4f" }}
@@ -86,7 +91,7 @@ export default function Legend({ showBusIcons = false }: { showBusIcons?: boolea
 
       {showBusIcons && (
         <>
-          <h4 className="mb-1.5 mt-2 text-[11px] uppercase text-muted-foreground">Bus type</h4>
+          <h4 className="mb-1.5 mt-2 text-[12px] font-medium text-muted-foreground">Bus type</h4>
           <div className="grid grid-cols-2 gap-x-2 gap-y-0.5">
             {ICON_LEGEND.map(([cat, label]) => (
               <div key={cat} className="flex items-center gap-1.5">

@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { useThreadRuntime } from "@assistant-ui/react";
+import { ASK_EVENT } from "@/agent/ask-context";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
 import { LocateFixedIcon, X } from "lucide-react";
 import { api } from "../api";
@@ -37,6 +39,69 @@ function StatePill({ state }: { state: State }) {
   );
 }
 
+/** Questions an operator would ask about a line or a substation they clicked. */
+function questionsFor(kind: "node" | "line", name: string): string[] {
+  return kind === "line"
+    ? [
+        `Why is ${name} loaded like this right now?`,
+        `What happens if ${name} trips?`,
+        `How has ${name} moved over the day?`,
+      ]
+    : [
+        `What's happening at ${name}?`,
+        `What does ${name} connect to?`,
+        `How has ${name} changed over the day?`,
+      ];
+}
+
+/**
+ * Clicking the diagram is the quickest way to start a question: suggested
+ * questions about the clicked element, or the operator's own. The element is
+ * already in the agent's context (the selection), so the question can be short.
+ */
+function AskAbout({ kind, name }: { kind: "node" | "line"; name: string }) {
+  const runtime = useThreadRuntime();
+  const [own, setOwn] = useState("");
+  const ask = (q: string) => {
+    if (!q.trim()) return;
+    runtime.append(q.trim());
+    window.dispatchEvent(new Event(ASK_EVENT));
+    setOwn("");
+  };
+  return (
+    <div className="mt-3 flex flex-col gap-1.5 border-t pt-3">
+      <span className="text-[13px] text-muted-foreground">Ask about this</span>
+      {questionsFor(kind, name).map((q) => (
+        <button
+          key={q}
+          type="button"
+          onClick={() => ask(q)}
+          className="min-h-10 rounded-lg border bg-background px-3 py-2 text-left text-sm leading-snug transition-colors hover:border-ring"
+        >
+          {q}
+        </button>
+      ))}
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          ask(own);
+        }}
+      >
+        <label htmlFor="ask-about-own" className="sr-only">
+          Ask your own question about {name}
+        </label>
+        <input
+          id="ask-about-own"
+          value={own}
+          onChange={(e) => setOwn(e.target.value)}
+          placeholder="Or ask your own question"
+          className="h-10 w-full rounded-lg border border-input bg-muted px-3 text-sm outline-none placeholder:text-muted-foreground focus:border-ring"
+        />
+      </form>
+    </div>
+  );
+}
+
 function Row({ k, v }: { k: string; v: React.ReactNode }) {
   return (
     <>
@@ -67,15 +132,16 @@ export default function DetailPanel({ node, line, baseNode, baseLine, windowStar
   const genTypes = node ? formatGenTypes(node.gen_types) : "";
 
   return (
-    <div className="absolute bottom-3 left-3 z-20 w-[calc(100%-1.5rem)] max-w-[340px] rounded-xl border bg-card/95 p-3.5 shadow-lg backdrop-blur">
+    <div className="absolute bottom-3 left-3 z-20 max-h-[calc(100%-1.5rem)] w-[calc(100%-1.5rem)] max-w-[360px] overflow-y-auto rounded-xl border bg-popover/95 p-4 shadow-[0_14px_40px_rgba(5,12,16,.55)] backdrop-blur">
       <button
         className="absolute right-2 top-2 text-muted-foreground transition-colors hover:text-foreground"
         onClick={onClose}
+        aria-label="Close details"
       >
         <X className="size-4" />
       </button>
       <div className="mb-0.5 flex items-center gap-1.5 pr-5">
-        <h3 className="text-sm font-semibold">{title}</h3>
+        <h3 className="text-base font-semibold leading-snug">{title}</h3>
         {el && (
           <button
             type="button"
@@ -152,21 +218,22 @@ export default function DetailPanel({ node, line, baseNode, baseLine, windowStar
         </>
       )}
 
-      <div className="mb-1 mt-1 text-[11px] uppercase tracking-wide text-muted-foreground">
-        {metricLabel} — window trend
+      <div className="mb-1 mt-1 text-[12px] text-muted-foreground">
+        {metricLabel} over the day
       </div>
       <ResponsiveContainer width="100%" height={110}>
         <LineChart data={data} margin={{ top: 4, right: 6, bottom: 0, left: -18 }}>
-          <XAxis dataKey="t" tickFormatter={hhmm} tick={{ fontSize: 9, fill: "#a1a1aa" }} interval="preserveStartEnd" minTickGap={28} />
-          <YAxis tick={{ fontSize: 9, fill: "#a1a1aa" }} domain={["auto", "auto"]} width={40} />
+          <XAxis dataKey="t" tickFormatter={hhmm} tick={{ fontSize: 10, fill: "#9daeb6" }} interval="preserveStartEnd" minTickGap={28} />
+          <YAxis tick={{ fontSize: 10, fill: "#9daeb6" }} domain={["auto", "auto"]} width={40} />
           <Tooltip
-            contentStyle={{ background: "#1f1f23", border: "1px solid #3f3f46", borderRadius: 6, fontSize: 11 }}
+            contentStyle={{ background: "#22333b", border: "1px solid #34454f", borderRadius: 6, fontSize: 12 }}
             labelFormatter={(t) => hhmm(String(t))}
           />
-          {line && <ReferenceLine y={90} stroke="#ef4444" strokeDasharray="3 3" />}
-          <Line type="monotone" dataKey="v" stroke="#3b82f6" strokeWidth={2} dot={false} isAnimationActive={false} />
+          {line && <ReferenceLine y={90} stroke="#f0503c" strokeDasharray="3 3" />}
+          <Line type="monotone" dataKey="v" stroke="#afc0c8" strokeWidth={2} dot={false} isAnimationActive={false} />
         </LineChart>
       </ResponsiveContainer>
+      {el && <AskAbout kind={node ? "node" : "line"} name={title} />}
     </div>
   );
 }

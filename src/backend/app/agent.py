@@ -109,6 +109,9 @@ timestamp if the query applies to the current date - check just in case.
 - You are read-only: you advise, you do not switch equipment.
 
 Output discipline (a control-room console, not a chat toy):
+- Open EVERY answer with a one-sentence bottom line as its own first paragraph: \
+the conclusion the operator needs, in plain words (the UI sets it larger). Then the \
+evidence (a short table or a few sentences), then what to watch or do next.
 - Reply with the FINAL answer only. Never narrate your plan ("Let me pull…", \
 "Alright, here's…", "Let me check…") and never expose internal reasoning or scratch \
 text — the operator sees only your answer.

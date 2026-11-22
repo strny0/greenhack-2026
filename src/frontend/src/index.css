@@ -31,28 +31,41 @@
   --ring: oklch(0.708 0 0);
 }
 
+/* "Console" palette: dark slate for long shifts. Sea glass (--primary) is
+   reserved for the agent: its answers, the things it points at, and asking it
+   something. Physics (line loading) has its own scale in styling.ts. */
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
+  --background: #172229;
+  --foreground: #e9ece6;
+  --card: #1a272e;
+  --card-foreground: #e9ece6;
+  --popover: #22333b;
+  --popover-foreground: #e9ece6;
+  --primary: #8ed1c1;
+  --primary-foreground: #12211f;
+  --secondary: #2c3d46;
+  --secondary-foreground: #e9ece6;
+  --muted: #26363f;
+  --muted-foreground: #9daeb6;
+  --accent: #2c3d46;
+  --accent-foreground: #e9ece6;
+  --destructive: #f0503c;
+  --border: #34454f;
+  --input: #4a5d67;
+  --ring: #8ed1c1;
+  --agent-surface: #203436;
+  --agent-border: #4c6e68;
+  --sim-surface: #3a2420;
+  --sim-border: #7a3a31;
 }
 
 @theme inline {
+  --font-sans: "Barlow", "Segoe UI", system-ui, sans-serif;
+  --font-num: "Barlow Semi Condensed", "Barlow", system-ui, sans-serif;
+  --color-agent-surface: var(--agent-surface);
+  --color-agent-border: var(--agent-border);
+  --color-sim-surface: var(--sim-surface);
+  --color-sim-border: var(--sim-border);
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);

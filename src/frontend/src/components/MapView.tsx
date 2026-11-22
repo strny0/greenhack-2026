@@ -245,7 +245,7 @@ export default function MapView({ frame, meta, highlight, selected, onSelect, zo
         type: "line",
         source: "lines",
         filter: ["==", ["get", "hl"], 1],
-        paint: { "line-color": "#ffd84d", "line-width": 12, "line-opacity": 0.65, "line-blur": 3 },
+        paint: { "line-color": "#8ed1c1", "line-width": 12, "line-opacity": 0.65, "line-blur": 3 },
       });
       map.addLayer({
         id: "lines",
@@ -301,7 +301,7 @@ export default function MapView({ frame, meta, highlight, selected, onSelect, zo
         filter: ["==", ["get", "hl"], 1],
         paint: {
           "circle-radius": ["+", ["interpolate", ["linear"], ["get", "mag"], 0, 11, 2000, 26], 9],
-          "circle-color": "#ffd84d",
+          "circle-color": "#8ed1c1",
           "circle-opacity": 0.55,
         },
       });

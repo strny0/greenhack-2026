@@ -1,11 +1,13 @@
 import type { NodeType, State } from "../types";
 
 export const LOADING_STOPS: { pct: number; color: string }[] = [
-  { pct: 0,   color: "#2ecc71" },
-  { pct: 50,  color: "#9acd32" },
-  { pct: 75,  color: "#f5b915" },
-  { pct: 90,  color: "#ff7a45" },
-  { pct: 110, color: "#ff4d4f" },
+  // Blue -> amber -> orange -> red: stays distinct for red-green colour
+  // blindness, and the agent's sea-glass highlight never collides with it.
+  { pct: 0,   color: "#4f7891" },
+  { pct: 50,  color: "#6f9bb3" },
+  { pct: 75,  color: "#d9a441" },
+  { pct: 90,  color: "#ee7a3b" },
+  { pct: 110, color: "#f0503c" },
 ];
 
 export const OUT_OF_SERVICE_COLOR = "#5a6677";
