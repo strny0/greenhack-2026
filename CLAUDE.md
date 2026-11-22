@@ -19,7 +19,13 @@ SKIP_INSTALL=1 ./scripts/run.sh # backend :8099 + vite :5173 (proxies /api)
   A key needs `openrouter.ai` reachable too.
 - To use an Anthropic key directly: `AI_BASE_URL=https://api.anthropic.com/v1/`
   and `AI_MODEL=claude-sonnet-5-5`. No temperature is sent unless
-  `AI_TEMPERATURE` is set, because Claude Sonnet 5+ rejects it.
+  `AI_TEMPERATURE` is set, because Claude Sonnet 5+ rejects it. An
+  `api.anthropic.com` base URL makes the agent use the native Anthropic API
+  (Pydantic AI `AnthropicModel`) with prompt caching; other URLs use the
+  OpenAI-compatible model, which gets no caching.
+- Agent prompts go in `instructions` / `@agent.instructions`, never
+  `system_prompt`: Pydantic AI drops system prompts on runs that pass
+  `message_history`, which every follow-up chat turn does.
 
 ## Tests
 

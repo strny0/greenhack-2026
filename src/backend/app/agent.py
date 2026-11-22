@@ -48,6 +48,9 @@ from .gridstats.overrides import HourActualsOverride
 from .model import ScenarioSpec
 from .whatif_stack import Action, WhatIfStack, compose, has_actions
 
+from pydantic_ai.models.anthropic import AnthropicModel, AnthropicModelSettings
+from pydantic_ai.providers.anthropic import AnthropicProvider
+
 # `OpenAIChatModel` is the chat-completions class (works with third-party
 # OpenAI-compatible gateways); older versions name it `OpenAIModel`.
 try:  # pragma: no cover - version shim
@@ -222,6 +225,26 @@ def _hour_override(ctx: RunContext[Deps]) -> HourActualsOverride | None:
 
 
 def _model():
+    """Native Anthropic model when AI_BASE_URL points at api.anthropic.com (prompt
+    caching works there; Anthropic's OpenAI-compatible endpoint ignores it),
+    otherwise the OpenAI chat-completions model for OpenRouter & co."""
+    if config.AI_USE_ANTHROPIC:
+        provider = AnthropicProvider(
+            base_url=config.AI_ANTHROPIC_BASE_URL, api_key=config.AI_API_KEY
+        )
+        return AnthropicModel(
+            config.AI_MODEL,
+            provider=provider,
+            settings=AnthropicModelSettings(
+                # Breakpoints: after the tool list, after the static instructions
+                # (the per-request selection/simulation text comes after it), and
+                # an automatic one that follows the growing conversation, so each
+                # tool-loop step re-reads the previous step from cache.
+                anthropic_cache_tool_definitions=True,
+                anthropic_cache_instructions=True,
+                anthropic_cache=True,
+            ),
+        )
     provider = OpenAIProvider(base_url=config.AI_BASE_URL, api_key=config.AI_API_KEY)
     return _OpenAIModel(config.AI_MODEL, provider=provider)
 
