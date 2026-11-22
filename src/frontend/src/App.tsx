@@ -26,8 +26,11 @@ const DAY_FRAMES = 24; // one calendar day per loaded window
 // The diagram pane shares the screen with the chat. Operator-resizable; the
 // chat takes the rest. Width persists across reloads.
 const DIAGRAM_MIN = 360;
-const DIAGRAM_DEFAULT = 620;
-const DIAGRAM_KEY = "diagram-width";
+// The diagram gets 60% of the width by default; the chat keeps at least 420px.
+// Stored as a fraction so the split holds across screen sizes.
+const DIAGRAM_DEFAULT_FRAC = 0.6;
+const CHAT_MIN = 420;
+const DIAGRAM_KEY = "diagram-frac";
 
 const hourLabel = (ts: string) =>
   ts
@@ -81,9 +84,13 @@ export default function App() {
   const [simError, setSimError] = useState<string | null>(null);
   const timer = useRef<number | null>(null);
   const isDesktop = useMediaQuery("(min-width: 900px)");
-  const [diagramWidth, setDiagramWidth] = useState(() => {
-    const saved = Number(localStorage.getItem(DIAGRAM_KEY));
-    return saved >= DIAGRAM_MIN ? saved : DIAGRAM_DEFAULT;
+  const [diagramFrac, setDiagramFrac] = useState(() => {
+    try {
+      const saved = Number(localStorage.getItem(DIAGRAM_KEY));
+      return saved > 0.15 && saved < 0.9 ? saved : DIAGRAM_DEFAULT_FRAC;
+    } catch {
+      return DIAGRAM_DEFAULT_FRAC;
+    }
   });
   const resizing = useRef(false);
   const onResizeStart = useCallback((e: React.PointerEvent) => {
@@ -93,14 +100,19 @@ export default function App() {
   useEffect(() => {
     const onMove = (e: PointerEvent) => {
       if (!resizing.current) return;
-      // Handle sits on the pane's left edge; keep at least 420px for the chat.
-      const max = window.innerWidth - 420;
-      setDiagramWidth(Math.min(max, Math.max(DIAGRAM_MIN, window.innerWidth - e.clientX)));
+      // Handle sits on the pane's left edge; keep at least CHAT_MIN for the chat.
+      const vw = window.innerWidth;
+      const px = Math.min(vw - CHAT_MIN, Math.max(DIAGRAM_MIN, vw - e.clientX));
+      setDiagramFrac(px / vw);
     };
     const onUp = () => {
       if (!resizing.current) return;
       resizing.current = false;
-      localStorage.setItem(DIAGRAM_KEY, String(diagramWidth));
+      try {
+        localStorage.setItem(DIAGRAM_KEY, String(diagramFrac));
+      } catch {
+        /* storage unavailable: the split just isn't remembered */
+      }
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
@@ -108,7 +120,7 @@ export default function App() {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
     };
-  }, [diagramWidth]);
+  }, [diagramFrac]);
   // The first window load shows the full-screen progress bar and jumps to the
   // evening peak; later loads (a date change) keep the old frames on screen.
   const initialLoad = useRef(true);
@@ -364,7 +376,11 @@ export default function App() {
         "relative flex min-h-0 flex-col border-border bg-background",
         isDesktop ? "h-full shrink-0 border-l" : "h-[44dvh] shrink-0 border-b",
       )}
-      style={isDesktop ? { width: diagramWidth } : undefined}
+      style={
+        isDesktop
+          ? { width: `${diagramFrac * 100}%`, minWidth: DIAGRAM_MIN, maxWidth: `calc(100% - ${CHAT_MIN}px)` }
+          : undefined
+      }
     >
       {isDesktop && (
         <div

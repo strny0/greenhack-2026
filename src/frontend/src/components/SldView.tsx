@@ -41,6 +41,7 @@ function screenY(y: number): number {
 
 // --- SLD primitives -----------------------------------------------------------
 
+const LINE_HIT_WIDTH = 16;  // schematic units; ~10px invisible click band per line
 const BAR_THICKNESS = 8;     // schematic units; ~5px at default zoom
 const ROUTE_OFFSET = 28;     // detour distance for same-y bus pairs
 const PARALLEL_STAGGER = 14; // midY separation per parallel circuit
@@ -517,6 +518,32 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
                 strokeDasharray={l.in_service ? undefined : "6 4"}
                 strokeLinecap="round"
                 strokeLinejoin="round"
+                style={{ cursor: "pointer" }}
+                onMouseEnter={(e) => setTipFor(e, lineTip(l))}
+                onMouseMove={(e) => setTipFor(e, lineTip(l))}
+                onMouseLeave={() => setTip(null)}
+                onClick={() => onSelect({ kind: "line", id: l.id })}
+              />
+            );
+          })}
+        </g>
+
+        {/* invisible wide click targets: the drawn lines are only 2-3px, too
+            thin to hit reliably, so each gets a ~10px transparent band */}
+        <g>
+          {branchGeom.map((g) => {
+            if (!g) return null;
+            const l = g.l;
+            return (
+              <path
+                key={`hit-${l.id}`}
+                d={g.d}
+                fill="none"
+                stroke="transparent"
+                strokeWidth={LINE_HIT_WIDTH}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                pointerEvents="stroke"
                 style={{ cursor: "pointer" }}
                 onMouseEnter={(e) => setTipFor(e, lineTip(l))}
                 onMouseMove={(e) => setTipFor(e, lineTip(l))}
