@@ -94,6 +94,9 @@ LAT_MIN, LAT_MAX = 32.4, 42.05
 AI_BASE_URL = os.getenv("AI_BASE_URL", "https://openrouter.ai/api/v1")
 AI_API_KEY = os.getenv("AI_API_KEY", os.getenv("OPENROUTER_API_KEY", ""))
 AI_MODEL = os.getenv("AI_MODEL", "anthropic/claude-sonnet-4.5")
+# Optional sampling temperature. Unset by default: newer models (Claude Sonnet 5
+# and later) reject a temperature parameter outright, so only send one when asked.
+AI_TEMPERATURE = float(os.environ["AI_TEMPERATURE"]) if os.getenv("AI_TEMPERATURE") else None
 
 # --- Weather (Open-Meteo, no key) -------------------------------------------
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"

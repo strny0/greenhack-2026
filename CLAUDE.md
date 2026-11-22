@@ -17,6 +17,9 @@ SKIP_INSTALL=1 ./scripts/run.sh # backend :8099 + vite :5173 (proxies /api)
 - Chatbot needs `AI_API_KEY` in `src/backend/.env` (OpenAI-compatible, OpenRouter
   by default). Without it the app runs and chat returns grounded context only.
   A key needs `openrouter.ai` reachable too.
+- To use an Anthropic key directly: `AI_BASE_URL=https://api.anthropic.com/v1/`
+  and `AI_MODEL=claude-sonnet-5-5`. No temperature is sent unless
+  `AI_TEMPERATURE` is set, because Claude Sonnet 5+ rejects it.
 
 ## Tests
 

@@ -90,8 +90,8 @@ async def chat(messages: list[dict], timestamp: str) -> dict:
         resp = await client.chat.completions.create(
             model=config.AI_MODEL,
             messages=full_messages,
-            temperature=0.2,
             max_tokens=600,
+            **({"temperature": config.AI_TEMPERATURE} if config.AI_TEMPERATURE is not None else {}),
         )
         return {
             "reply": resp.choices[0].message.content,

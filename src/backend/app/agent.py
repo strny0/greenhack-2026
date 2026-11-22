@@ -215,7 +215,10 @@ agent: Agent[Deps, str] = Agent(
     _model() if config.AI_API_KEY else "test",
     deps_type=Deps,
     system_prompt=SYSTEM_PROMPT,
-    model_settings=ModelSettings(temperature=0.2, max_tokens=8192),
+    model_settings=ModelSettings(
+        max_tokens=8192,
+        **({"temperature": config.AI_TEMPERATURE} if config.AI_TEMPERATURE is not None else {}),
+    ),
 )
 
 
