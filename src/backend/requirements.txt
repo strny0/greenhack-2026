@@ -9,7 +9,8 @@ httpx==0.28.1
 openai>=2.29.0                      # raised from 1.59.6 — pydantic-ai-slim 1.106 needs >=2.29
 python-dotenv==1.0.1
 pydantic>=2.12.0,<3                  # raised from 2.10.4 — pydantic-ai-slim 1.106 needs >=2.12
-pydantic-ai-slim[openai]==1.106.0   # agentic harness: tool-calling loop + streaming
+pydantic-ai-slim[openai,anthropic]==1.106.0   # agentic harness: tool-calling loop + streaming; anthropic = native API w/ prompt caching
+anthropic>=0.105,<1                 # 1.x moved to httpx2; pydantic-ai-slim 1.106 still hands it an httpx client
 
 # gridstats (historical/statistical layer) — offline build + bundle serving
 statsmodels>=0.14   # STL seasonal decomposition for anomaly residuals
