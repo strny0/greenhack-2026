@@ -18,6 +18,8 @@ interface Props {
   onClose: () => void;
   /** Fly the camera to the selected element on whichever view is active. */
   onGoTo: (kind: "node" | "line", id: string) => void;
+  /** Told when the card folds to one row or opens again. */
+  onFoldChange?: (folded: boolean) => void;
 }
 
 const hhmm = (ts: string) => new Date(ts).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
@@ -94,7 +96,7 @@ function Row({ k, v }: { k: string; v: React.ReactNode }) {
   );
 }
 
-export default function DetailPanel({ node, line, baseNode, baseLine, windowStartTs, windowCount, onClose, onGoTo }: Props) {
+export default function DetailPanel({ node, line, baseNode, baseLine, windowStartTs, windowCount, onClose, onGoTo, onFoldChange }: Props) {
   const [data, setData] = useState<{ t: string; v: number | null }[]>([]);
   const [metricLabel, setMetricLabel] = useState("");
   const [folded, setFolded] = useState(false);
@@ -114,13 +116,14 @@ export default function DetailPanel({ node, line, baseNode, baseLine, windowStar
   const el = node ?? line;
   const elId = el?.id;
   useEffect(() => setFolded(false), [elId]);
+  useEffect(() => onFoldChange?.(folded), [folded, onFoldChange]);
   const title = node ? labelOf(node) : line ? labelOf(line) : "";
   const genTypes = node ? formatGenTypes(node.gen_types) : "";
 
   return (
     // Docked under the diagram rather than floating over it, so it never hides
     // the element it describes. After a question is asked it folds to one row.
-    <div className="relative max-h-[42%] shrink-0 overflow-y-auto border-t bg-card px-4 py-3">
+    <div className="relative max-h-[36%] shrink-0 overflow-y-auto border-t bg-card px-4 py-3">
       <div className="absolute right-2 top-2 flex items-center gap-1">
         <button
           type="button"
@@ -222,7 +225,7 @@ export default function DetailPanel({ node, line, baseNode, baseLine, windowStar
           <div className="mb-1 mt-1 text-[12px] text-muted-foreground">
             {metricLabel} over the day
           </div>
-          <ResponsiveContainer width="100%" height={110}>
+          <ResponsiveContainer width="100%" height={80}>
             <LineChart data={data} margin={{ top: 4, right: 6, bottom: 0, left: -18 }}>
               <XAxis dataKey="t" tickFormatter={hhmm} tick={{ fontSize: 10, fill: "#9daeb6" }} interval="preserveStartEnd" minTickGap={28} />
               <YAxis tick={{ fontSize: 10, fill: "#9daeb6" }} domain={["auto", "auto"]} width={40} />

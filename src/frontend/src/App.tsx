@@ -66,6 +66,7 @@ export default function App() {
   const [windowLoading, setWindowLoading] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [selected, setSelected] = useState<Selection | null>(null);
+  const [detailFolded, setDetailFolded] = useState(false);
   const [highlight, setHighlight] = useState<Set<string>>(new Set());
   // A "fly the camera here" request. The nonce makes repeated jumps to the same
   // element re-trigger the view's effect (a new object identity each time).
@@ -454,9 +455,12 @@ export default function App() {
           windowCount={renderFrames.length}
           onClose={() => setSelected(null)}
           onGoTo={zoom}
+          onFoldChange={setDetailFolded}
         />
       )}
-      <ComingHours
+      {/* An open detail card takes Coming hours' place, so the schematic keeps
+          most of the height; it comes back once the card folds or closes. */}
+      {(!(selectedNode || selectedLine) || detailFolded) && <ComingHours
         frames={renderFrames}
         idx={idx}
         simulating={!!simulation}
@@ -464,7 +468,7 @@ export default function App() {
           setPlaying(false);
           setIdx(i);
         }}
-      />
+      />}
     </section>
   );
 
