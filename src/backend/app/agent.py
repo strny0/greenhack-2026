@@ -22,6 +22,7 @@ from pydantic_ai import Agent, RunContext
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
+    ModelMessage,
     ModelRequest,
     ModelResponse,
     PartDeltaEvent,
@@ -30,10 +31,12 @@ from pydantic_ai.messages import (
     TextPartDelta,
     ThinkingPart,
     ThinkingPartDelta,
+    ToolCallPart,
     ToolReturnPart,
     UserPromptPart,
 )
 from pydantic_ai.settings import ModelSettings
+from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.usage import UsageLimits
 
 import anyio
@@ -78,6 +81,11 @@ dataset, say so plainly rather than guessing.
 the question is about contingencies or operator actions, and keep limits modest. N-1 \
 is computed for the currently viewed hour, so differences between hours are normal \
 (the grid is not "changing").
+- "What happens if X trips / fails / goes out?" about ONE line or bus is a single \
+what_if move, not N-1: call what_if(op="trip_line" or "trip_bus", target=X), read \
+the result (it already lists new alerts and top movers), add one or two current-hour \
+lookups only if needed, answer, then reset. Use n1_contingency_analysis only when \
+the operator asks about outages in general ("what is the worst single outage?").
 - WHAT-IF SANDBOX (the `what_if` tool): build hypotheticals step by step and chain \
 them. Each call is one move — trip_line / trip_bus / scale_load — and moves STACK \
 on top of the grid you're viewing. After any move, the current-hour tools \
@@ -210,6 +218,19 @@ def _model():
     provider = OpenAIProvider(base_url=config.AI_BASE_URL, api_key=config.AI_API_KEY)
     return _OpenAIModel(config.AI_MODEL, provider=provider)
 
+
+# Model requests per answer. A thorough answer takes 6-12 lookups; past this the
+# agent wraps up with what it has (see _wrap_up) rather than erroring.
+REQUEST_LIMIT = 20
+WRAP_UP_PROMPT = (
+    "You have used your lookup budget for this question. Do not call any more "
+    "tools. Answer now from what you already found, say plainly what you did "
+    "not get to check, and suggest the one follow-up question worth asking."
+)
+WRAP_UP_FALLBACK = (
+    "I ran out of lookups before finishing this one. Ask a narrower question "
+    "(one line, one bus or one hour) and I'll pick it up from there."
+)
 
 agent: Agent[Deps, str] = Agent(
     _model() if config.AI_API_KEY else "test",
@@ -509,6 +530,8 @@ def element_history(
 @agent.tool
 def n1_contingency_analysis(ctx: RunContext[Deps]) -> dict:
     """Deterministic N-1 security analysis: trip each in-service line, re-solve
+    (For one named line or bus, use what_if instead; this is for "which single
+    outage is worst?".)
     the load flow, and rank by worst resulting stress. Non-converging trips mean
     islanding / voltage collapse (most critical). Returns the worst contingencies.
 
@@ -630,7 +653,9 @@ def what_if(
     target: str | None = None,
     factor: float | None = None,
 ) -> dict:
-    """Stateful what-if SANDBOX you can chain and unwind. One call = one move:
+    """Stateful what-if SANDBOX you can chain and unwind. One call = one move.
+    This is THE tool for "what happens if <this line/bus> trips?": one
+    trip_line/trip_bus call answers it; do not run N-1 for a single element.
       • op="trip_line",  target=<branch id>   take a line out of service
       • op="trip_bus",   target=<bus id>      drop a bus's gens & loads
       • op="scale_load", factor=1.5           multiply all load
@@ -943,68 +968,103 @@ async def stream_agent(
         prompt = messages[-1].get("content") or ""
         history = messages[:-1]
 
+    current = None
     try:
         async with agent.iter(
             prompt,
             deps=deps,
             message_history=_to_history(history),
-            usage_limits=UsageLimits(request_limit=8),
+            usage_limits=UsageLimits(request_limit=REQUEST_LIMIT),
         ) as run:
-            async for node in run:
-                if Agent.is_model_request_node(node):
-                    async with node.stream(run.ctx) as request_stream:
-                        async for event in request_stream:
-                            if isinstance(event, PartStartEvent):
-                                part = event.part
-                                if isinstance(part, TextPart) and part.content:
-                                    yield json.dumps(
-                                        {"type": "text", "delta": part.content}
-                                    ) + "\n"
-                                elif isinstance(part, ThinkingPart) and part.content:
-                                    yield json.dumps(
-                                        {"type": "reasoning", "delta": part.content}
-                                    ) + "\n"
-                            elif isinstance(event, PartDeltaEvent):
-                                d = event.delta
-                                if isinstance(d, TextPartDelta) and d.content_delta:
-                                    yield json.dumps(
-                                        {"type": "text", "delta": d.content_delta}
-                                    ) + "\n"
-                                elif isinstance(d, ThinkingPartDelta) and d.content_delta:
-                                    yield json.dumps(
-                                        {"type": "reasoning", "delta": d.content_delta}
-                                    ) + "\n"
-                elif Agent.is_call_tools_node(node):
-                    async with node.stream(run.ctx) as tool_stream:
-                        async for event in tool_stream:
-                            if isinstance(event, FunctionToolCallEvent):
-                                p = event.part
-                                args = p.args
-                                if isinstance(args, str):
-                                    try:
-                                        args = json.loads(args) if args else {}
-                                    except json.JSONDecodeError:
-                                        pass
-                                yield json.dumps(
-                                    {
-                                        "type": "tool-call",
-                                        "id": p.tool_call_id,
-                                        "name": p.tool_name,
-                                        "args": _jsonable(args),
-                                    }
-                                ) + "\n"
-                            elif isinstance(event, FunctionToolResultEvent):
-                                res = event.result
-                                content = (
-                                    res.content if isinstance(res, ToolReturnPart) else res
-                                )
-                                yield json.dumps(
-                                    {
-                                        "type": "tool-result",
-                                        "id": event.tool_call_id,
-                                        "result": _jsonable(content),
-                                    }
-                                ) + "\n"
+            current = run
+            async for line in _stream_nodes(run):
+                yield line
+    except UsageLimitExceeded:
+        # Out of lookups: answer from what was already gathered instead of
+        # surfacing the raw limit error to the operator.
+        gathered = current.all_messages() if current is not None else []
+        async for line in _wrap_up(gathered, deps):
+            yield line
     except Exception as e:  # noqa: BLE001
         yield json.dumps({"type": "error", "message": str(e)}) + "\n"
     yield json.dumps({"type": "done"}) + "\n"
+
+
+async def _wrap_up(messages: list[ModelMessage], deps: Deps):
+    """One last tool-free turn after the lookup budget ran out."""
+    msgs = list(messages)
+    # Drop a trailing response whose tool calls never got results.
+    while msgs and isinstance(msgs[-1], ModelResponse) and any(
+        isinstance(p, ToolCallPart) for p in msgs[-1].parts
+    ):
+        msgs.pop()
+    try:
+        async with agent.iter(
+            WRAP_UP_PROMPT,
+            deps=deps,
+            message_history=msgs,
+            usage_limits=UsageLimits(request_limit=1),
+        ) as run:
+            async for line in _stream_nodes(run):
+                yield line
+    except Exception:  # noqa: BLE001
+        yield json.dumps({"type": "text", "delta": WRAP_UP_FALLBACK}) + "\n"
+
+
+async def _stream_nodes(run):
+    """Translate one agent run's nodes into the NDJSON events the UI reads."""
+    async for node in run:
+        if Agent.is_model_request_node(node):
+            async with node.stream(run.ctx) as request_stream:
+                async for event in request_stream:
+                    if isinstance(event, PartStartEvent):
+                        part = event.part
+                        if isinstance(part, TextPart) and part.content:
+                            yield json.dumps(
+                                {"type": "text", "delta": part.content}
+                            ) + "\n"
+                        elif isinstance(part, ThinkingPart) and part.content:
+                            yield json.dumps(
+                                {"type": "reasoning", "delta": part.content}
+                            ) + "\n"
+                    elif isinstance(event, PartDeltaEvent):
+                        d = event.delta
+                        if isinstance(d, TextPartDelta) and d.content_delta:
+                            yield json.dumps(
+                                {"type": "text", "delta": d.content_delta}
+                            ) + "\n"
+                        elif isinstance(d, ThinkingPartDelta) and d.content_delta:
+                            yield json.dumps(
+                                {"type": "reasoning", "delta": d.content_delta}
+                            ) + "\n"
+        elif Agent.is_call_tools_node(node):
+            async with node.stream(run.ctx) as tool_stream:
+                async for event in tool_stream:
+                    if isinstance(event, FunctionToolCallEvent):
+                        p = event.part
+                        args = p.args
+                        if isinstance(args, str):
+                            try:
+                                args = json.loads(args) if args else {}
+                            except json.JSONDecodeError:
+                                pass
+                        yield json.dumps(
+                            {
+                                "type": "tool-call",
+                                "id": p.tool_call_id,
+                                "name": p.tool_name,
+                                "args": _jsonable(args),
+                            }
+                        ) + "\n"
+                    elif isinstance(event, FunctionToolResultEvent):
+                        res = event.result
+                        content = (
+                            res.content if isinstance(res, ToolReturnPart) else res
+                        )
+                        yield json.dumps(
+                            {
+                                "type": "tool-result",
+                                "id": event.tool_call_id,
+                                "result": _jsonable(content),
+                            }
+                        ) + "\n"
