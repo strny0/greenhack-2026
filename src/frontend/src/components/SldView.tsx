@@ -42,6 +42,7 @@ function screenY(y: number): number {
 // --- SLD primitives -----------------------------------------------------------
 
 const LINE_HIT_WIDTH = 16;  // schematic units; ~10px invisible click band per line
+const BAR_HIT_PX = 12;      // on-screen px; invisible click band around each bus bar
 const BAR_THICKNESS = 6;     // schematic units; ~4px at default zoom
 const ROUTE_OFFSET = 28;     // detour distance for same-y bus pairs
 const PARALLEL_STAGGER = 14; // midY separation per parallel circuit
@@ -723,6 +724,37 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
                 stroke={BAR_COLOR}
                 strokeWidth={bar}
                 strokeLinecap="round"
+                style={{ cursor: "pointer" }}
+                onMouseEnter={(e) => setTipFor(e, nodeTip(n))}
+                onMouseMove={(e) => setTipFor(e, nodeTip(n))}
+                onMouseLeave={() => setTip(null)}
+                onClick={() => onSelect({ kind: "node", id: n.id })}
+              />
+            );
+          })}
+        </g>
+
+        {/* invisible click bands for bus bars: the bar is only a few px tall, so
+            a click just above or below it fell through to the line band and
+            selected a connected line. ~12px on screen at any zoom, drawn after
+            the line bands so a bar wins near its own edges. */}
+        <g>
+          {frame.nodes.map((n) => {
+            const c = coords[n.id];
+            if (!c) return null;
+            const len = layout.barLength(n.id);
+            const sy = screenY(c[1]);
+            return (
+              <line
+                key={`nhit-${n.id}`}
+                x1={c[0] - len / 2}
+                y1={sy}
+                x2={c[0] + len / 2}
+                y2={sy}
+                stroke="transparent"
+                strokeWidth={Math.max(bar, BAR_HIT_PX * upp)}
+                strokeLinecap="butt"
+                pointerEvents="stroke"
                 style={{ cursor: "pointer" }}
                 onMouseEnter={(e) => setTipFor(e, nodeTip(n))}
                 onMouseMove={(e) => setTipFor(e, nodeTip(n))}
