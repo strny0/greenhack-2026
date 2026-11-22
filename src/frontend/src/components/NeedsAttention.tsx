@@ -26,10 +26,12 @@ function groupAlerts(alerts: AlertRow[]): Item[] {
     label: a.label,
     value: a.kind === "line" ? `${a.val.toFixed(0)}%` : `${a.val.toFixed(3)} pu`,
     ids: [a.id],
+    // The id rides along in brackets so the agent can look the element up
+    // directly instead of searching for it by name.
     question:
       a.kind === "line"
-        ? `${a.label} is ${a.msg}. Why, and what should I do about it?`
-        : `${a.label} has ${a.msg.replace(/ — /, ", ")}. Why, and what should I do about it?`,
+        ? `${a.label} (${a.id}) is ${a.msg}. Why, and what should I do about it?`
+        : `${a.label} (${a.id}) has ${a.msg.replace(/ — /, ", ")}. Why, and what should I do about it?`,
   });
   const lineAlerts = alerts.filter((a) => a.kind === "line" && a.sev === "alert").map(one);
   const nodeAlerts = alerts.filter((a) => a.kind === "node" && a.sev === "alert").map(one);

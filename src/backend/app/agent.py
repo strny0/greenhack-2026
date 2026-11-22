@@ -86,6 +86,10 @@ what_if move, not N-1: call what_if(op="trip_line" or "trip_bus", target=X), rea
 the result (it already lists new alerts and top movers), add one or two current-hour \
 lookups only if needed, answer, then reset. Use n1_contingency_analysis only when \
 the operator asks about outages in general ("what is the worst single outage?").
+- If an OPERATOR SELECTION is given and the question names that element (by its \
+name or "this line/bus"), use the selection's id directly in tools. Don't search \
+for it by name with bus_neighbors, most_loaded_lines or run_python. Likewise, \
+an id given in brackets in the question is the element to use.
 - WHAT-IF SANDBOX (the `what_if` tool): build hypotheticals step by step and chain \
 them. Each call is one move — trip_line / trip_bus / scale_load — and moves STACK \
 on top of the grid you're viewing. After any move, the current-hour tools \
@@ -235,7 +239,11 @@ WRAP_UP_FALLBACK = (
 agent: Agent[Deps, str] = Agent(
     _model() if config.AI_API_KEY else "test",
     deps_type=Deps,
-    system_prompt=SYSTEM_PROMPT,
+    # `instructions`, not `system_prompt`: pydantic-ai drops system prompts
+    # whenever message_history is non-empty, so from the second question on
+    # the agent lost its role, the selection and the simulation context.
+    # Instructions are sent on every request.
+    instructions=SYSTEM_PROMPT,
     model_settings=ModelSettings(
         max_tokens=8192,
         **({"temperature": config.AI_TEMPERATURE} if config.AI_TEMPERATURE is not None else {}),
@@ -243,7 +251,7 @@ agent: Agent[Deps, str] = Agent(
 )
 
 
-@agent.system_prompt
+@agent.instructions
 def _selection_context(ctx: RunContext[Deps]) -> str:
     """Tell the model what the operator currently has selected on the map, so
     deictic references ("this line", "the selected bus", "it", "here") resolve."""
@@ -278,7 +286,7 @@ def _selection_context(ctx: RunContext[Deps]) -> str:
     )
 
 
-@agent.system_prompt
+@agent.instructions
 def _simulation_context(ctx: RunContext[Deps]) -> str:
     """Tell the model when a failure simulation is active. This is the ONLY way the
     agent learns a scenario is running — without it, it would describe the real grid
