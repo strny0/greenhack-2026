@@ -18,6 +18,7 @@ import {
 } from "@/components/assistant-ui/tool-group";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { ToolCallView, hasToolView } from "@/agent/tool-views";
+import { EvidenceTrail, LiveSteps } from "@/agent/evidence";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -351,16 +352,18 @@ const AssistantMessage: FC = () => {
                   </ReasoningRoot>
                 );
               }
-              case "group-tool":
+              case "group-tool": {
+                // While the agent works, show each lookup as it happens with a
+                // Stop button; once done, fold back to the compact group.
+                if (part.status.type === "running")
+                  return <LiveSteps indices={part.indices} />;
                 return (
                   <ToolGroupRoot>
-                    <ToolGroupHeader
-                      indices={part.indices}
-                      active={part.status.type === "running"}
-                    />
+                    <ToolGroupHeader indices={part.indices} active={false} />
                     <ToolGroupContent>{children}</ToolGroupContent>
                   </ToolGroupRoot>
                 );
+              }
               case "text":
                 return <MarkdownText />;
               case "reasoning":
@@ -385,6 +388,7 @@ const AssistantMessage: FC = () => {
             }
           }}
         </MessagePrimitive.GroupedParts>
+        <EvidenceTrail />
         <MessageError />
       </div>
 

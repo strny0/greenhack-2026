@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ASK_EVENT } from "@/agent/ask-context";
+import NeedsAttention from "./NeedsAttention";
 import { api } from "../api";
 import type { ContingencyResult, Meta, PresetKey, ScenarioSpec, StateFrame, WeatherPoint, WhatIfResponse } from "../types";
 import type { Selection } from "./MapView";
@@ -19,7 +20,7 @@ import {
 import { cn } from "@/lib/utils";
 import { buildLabelMap, formatGenTypes, labelOf, NODE_KIND_LABEL } from "@/lib/gridmeta";
 
-interface AlertRow {
+export interface AlertRow {
   id: string;
   kind: "line" | "node";
   sev: "alert" | "warn";
@@ -212,8 +213,16 @@ export default function Sidebar({ frame, meta, onFocus, onClearFocus, onSelect, 
         </TabsList>
 
         <div className="flex min-h-0 flex-1 flex-col">
-          <TabsContent value="chat" className="m-0 min-h-0 flex-1">
-            <AgentChat grid={grid} onHighlight={onFocus} />
+          <TabsContent value="chat" className="m-0 flex min-h-0 flex-1 flex-col">
+            <NeedsAttention
+              alerts={alerts}
+              simulating={!!simulation}
+              onFocus={onFocus}
+              onMore={() => setTab("alerts")}
+            />
+            <div className="min-h-0 flex-1">
+              <AgentChat grid={grid} onHighlight={onFocus} />
+            </div>
           </TabsContent>
 
           <TabsContent value="alerts" className="m-0 min-h-0 flex-1">

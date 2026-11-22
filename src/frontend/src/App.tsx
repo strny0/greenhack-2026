@@ -8,6 +8,7 @@ import Legend from "./components/Legend";
 import DetailPanel from "./components/DetailPanel";
 import Sidebar from "./components/Sidebar";
 import SimulationBadge from "./components/SimulationBadge";
+import ComingHours from "./components/ComingHours";
 import { AgentRuntimeProvider } from "./agent/AgentRuntimeProvider";
 import { AskContextCtx, type AskContext } from "./agent/ask-context";
 import { labelOf } from "./lib/gridmeta";
@@ -439,6 +440,15 @@ export default function App() {
           />
         )}
       </div>
+      <ComingHours
+        frames={renderFrames}
+        idx={idx}
+        simulating={!!simulation}
+        onPick={(i) => {
+          setPlaying(false);
+          setIdx(i);
+        }}
+      />
     </section>
   );
 

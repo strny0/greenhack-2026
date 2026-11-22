@@ -58,13 +58,17 @@ export default function Legend({ showBusIcons = false }: { showBusIcons?: boolea
       {open && (
         <div className="mt-2">
       <h4 className="mb-1.5 text-[12px] font-medium text-muted-foreground">Line loading</h4>
-      <div className="my-1 flex items-center gap-2">
-        <span
-          className="h-1 w-[22px] rounded-sm"
-          style={{ background: "linear-gradient(90deg,#4f7891,#6f9bb3,#d9a441,#ee7a3b,#f0503c)" }}
-        />
-        <span>0 to 110%+</span>
-      </div>
+      {[
+        ["#5a6a72", "Under 50%, normal", 2],
+        ["#d9a441", "50 to 80%, watch", 3],
+        ["#ee7a3b", "80 to 100%, act soon", 4],
+        ["#f0503c", "Over 100%, overloaded", 5],
+      ].map(([c, label, h]) => (
+        <div key={label as string} className="my-1 flex items-center gap-2">
+          <span className="w-[22px] rounded-sm" style={{ background: c as string, height: h as number }} />
+          <span>{label}</span>
+        </div>
+      ))}
       <h4 className="mb-1.5 mt-2 text-[12px] font-medium text-muted-foreground">Nodes</h4>
       {[
         ["#2f81f7", "Generation"],

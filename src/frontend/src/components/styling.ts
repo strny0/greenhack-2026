@@ -1,13 +1,15 @@
 import type { NodeType, State } from "../types";
 
 export const LOADING_STOPS: { pct: number; color: string }[] = [
-  // Blue -> amber -> orange -> red: stays distinct for red-green colour
-  // blindness, and the agent's sea-glass highlight never collides with it.
-  { pct: 0,   color: "#4f7891" },
-  { pct: 50,  color: "#6f9bb3" },
-  { pct: 75,  color: "#d9a441" },
-  { pct: 90,  color: "#ee7a3b" },
-  { pct: 110, color: "#f0503c" },
+  // Normal stays grey, colour only where attention is needed (ISA-101 HMI):
+  // grey up to 50%, then amber -> orange -> red. Amber to red also step down in
+  // lightness, so they read for colour-blind operators, and the agent's
+  // sea-glass highlight never collides with them.
+  { pct: 0,   color: "#4a5961" },
+  { pct: 50,  color: "#5a6a72" },
+  { pct: 55,  color: "#d9a441" },
+  { pct: 85,  color: "#ee7a3b" },
+  { pct: 100, color: "#f0503c" },
 ];
 
 export const OUT_OF_SERVICE_COLOR = "#5a6677";
