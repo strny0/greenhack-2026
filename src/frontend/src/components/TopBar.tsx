@@ -104,7 +104,7 @@ export default function TopBar({
         />
         <Kpi label="Load" value={`${s.total_load_mw.toLocaleString()} MW`} />
         <Kpi
-          className="hidden xl:flex"
+          className="hidden min-[1440px]:flex"
           label="Balancing"
           value={`${s.slack_mw > 0 ? "+" : ""}${s.slack_mw} MW`}
         />
@@ -129,7 +129,7 @@ export default function TopBar({
           value={s.converged ? "Converged" : "No solution"}
           tone={s.converged ? undefined : "bad"}
           // Only worth the space on narrower screens when it has failed.
-          className={s.converged ? "hidden xl:flex" : undefined}
+          className={s.converged ? "hidden min-[1440px]:flex" : undefined}
         />
       </dl>
 
