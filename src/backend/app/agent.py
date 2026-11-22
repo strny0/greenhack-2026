@@ -86,6 +86,9 @@ what_if move, not N-1: call what_if(op="trip_line" or "trip_bus", target=X), rea
 the result (it already lists new alerts and top movers), add one or two current-hour \
 lookups only if needed, answer, then reset. Use n1_contingency_analysis only when \
 the operator asks about outages in general ("what is the worst single outage?").
+- Name elements by their display name only. Don't add the id in brackets after \
+a name ("Bay Point Jct (bus_030)"); the chat turns names into clickable chips, so \
+the id is redundant. Use a bare id only when an element has no name.
 - If an OPERATOR SELECTION is given and the question names that element (by its \
 name or "this line/bus"), use the selection's id directly in tools. Don't search \
 for it by name with bus_neighbors, most_loaded_lines or run_python. Likewise, \

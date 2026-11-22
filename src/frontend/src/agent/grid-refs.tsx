@@ -163,9 +163,43 @@ export function rehypeGridRefs(refs: GridRef[] = []) {
         next.push(child);
       }
     }
-    node.children = next;
+    node.children = dedupeAdjacent(next);
   };
   return (tree: HNode) => walk(tree, false);
+}
+
+const anchorId = (n: HNode | undefined) =>
+  n?.type === "element" && n.tagName === "a" ? (n.properties?.title as string | undefined) : undefined;
+
+/**
+ * Drop a chip that only repeats the chip right before it: the model often
+ * writes "Name (id)" or "Name, id", which would render as two identical chips
+ * side by side. The brackets around the repeat go with it.
+ */
+export function dedupeAdjacent(nodes: HNode[]): HNode[] {
+  const out: HNode[] = [];
+  for (let i = 0; i < nodes.length; i++) {
+    const n = nodes[i];
+    const id = anchorId(n);
+    const gap = out[out.length - 1];
+    const prev = out[out.length - 2];
+    if (
+      id &&
+      gap?.type === "text" &&
+      /^\s*[(\[,]?\s*$/.test(gap.value ?? "") &&
+      anchorId(prev) === id
+    ) {
+      const opened = /[(\[]/.test(gap.value ?? "");
+      out.pop(); // the " (" between the two chips
+      const after = nodes[i + 1];
+      if (opened && after?.type === "text" && /^\s*[)\]]/.test(after.value ?? "")) {
+        nodes[i + 1] = { ...after, value: (after.value ?? "").replace(/^\s*[)\]]/, "") };
+      }
+      continue;
+    }
+    out.push(n);
+  }
+  return out;
 }
 
 function GridChip({ kind, id, children }: { kind: GridKind; id: string; children?: ReactNode }) {
