@@ -14,7 +14,7 @@ pydantic-ai-slim[openai]==1.106.0   # agentic harness: tool-calling loop + strea
 # gridstats (historical/statistical layer) — offline build + bundle serving
 statsmodels>=0.14   # STL seasonal decomposition for anomaly residuals
 tqdm>=4.66          # progress bar for the one-time snapshot scan
-pyarrow>=14         # parquet read/write for the precomputed target/ bundle
+pyarrow>=14,<26     # parquet read/write for the precomputed target/ bundle; pyarrow 26 needs NumPy 2 (we pin 1.26.4)
 
 # dev/test
 pytest>=8           # gridstats context-insert tests (app/gridstats/tests)
