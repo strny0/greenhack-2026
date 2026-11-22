@@ -44,6 +44,8 @@ function screenY(y: number): number {
 const LINE_HIT_WIDTH = 16;  // schematic units; ~10px invisible click band per line
 const BAR_HIT_PX = 12;      // on-screen px; invisible click band around each bus bar
 const BAR_THICKNESS = 6;     // schematic units; ~4px at default zoom
+const TAG_MIN_PCT = 50;      // lines at or above this get a percent tag
+const TAG_OVERVIEW_COUNT = 10; // at the overview, only the busiest few
 const FADED = 0.25;          // opacity of what lies outside the selection focus
 const LANDMARK_COUNT = 14;   // buses named at the overview, collisions permitting
 const LANDMARK_MW_PER_LINE = 60; // a connection counts like 60 MW in the ranking
@@ -464,6 +466,32 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
   const nOp = (id: string) => (focus && !focus.nodes.has(id) ? FADED : 1);
   const lOp = (id: string) => (focus && !focus.lines.has(id) ? FADED : 1);
 
+  // Busy lines (>= 50% loading) get a small tag at their midpoint with the
+  // percent and an arrow for the flow direction. At the overview only the
+  // busiest few, so the tags point at the story instead of carpeting it.
+  const tags: { g: NonNullable<(typeof branchGeom)[number]>; pct: number; dir: "l" | "r" | "u" | "d"; x0: number; y0: number; w: number; h: number }[] = [];
+  const placeTags = (placed: { x0: number; x1: number; y0: number; y1: number }[]) => {
+    const busy = branchGeom
+      .filter((g): g is NonNullable<typeof g> => !!g && g.l.in_service && (g.l.loading_pct ?? 0) >= TAG_MIN_PCT)
+      .sort((a, b) => (b.l.loading_pct ?? 0) - (a.l.loading_pct ?? 0))
+      .slice(0, zoom < 2 ? TAG_OVERVIEW_COUNT : Infinity);
+    for (const g of busy) {
+      const pct = Math.round(g.l.loading_pct ?? 0);
+      // Flow runs from the end with positive P; on the drawn route that is
+      // along the horizontal middle segment, or the vertical if there is none.
+      const forward = (g.l.p_from_mw ?? 0) >= 0;
+      const horiz = Math.abs(g.bx - g.ax) >= 1;
+      const sgn = (horiz ? Math.sign(g.bx - g.ax) : Math.sign(g.by - g.ay)) * (forward ? 1 : -1);
+      const dir = horiz ? (sgn >= 0 ? "r" : "l") : sgn >= 0 ? "d" : "u";
+      const w = (String(pct).length * 6.2 + 6 + 16) * upp;
+      const h = 14 * upp;
+      const box = { x0: g.midX - w / 2, x1: g.midX + w / 2, y0: g.midY - h / 2, y1: g.midY + h / 2 };
+      if (placed.some((p) => box.x0 < p.x1 && box.x1 > p.x0 && box.y0 < p.y1 && box.y1 > p.y0)) continue;
+      placed.push(box);
+      tags.push({ g, pct, dir, x0: box.x0, y0: box.y0, w, h });
+    }
+  };
+
   // Which buses get a name. Must-show ones (selection, alerts, agent mentions)
   // are placed first, then the landmarks, then (zoomed in) everything else;
   // anything but a must-show is dropped when it would collide with a name
@@ -479,7 +507,13 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
       !!focus?.nodes.has(n.id);
     const rank = (n: GridNode) => (must(n) ? 2 : landmarks.has(n.id) ? 1 : 0);
     const order = [...frame.nodes].sort((a, b) => rank(b) - rank(a));
+    let tagsPlaced = false;
     for (const n of order) {
+      // Busy-line tags go in after the must-show names and before landmarks.
+      if (!tagsPlaced && rank(n) < 2) {
+        tagsPlaced = true;
+        placeTags(placed);
+      }
       const isMust = must(n);
       if (!showAllLabels && rank(n) === 0) continue;
       const c = coords[n.id];
@@ -510,6 +544,7 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
       labelled.add(n.id);
       labelSpot.set(n.id, chosen);
     }
+    if (!tagsPlaced) placeTags(placed);
   }
 
   const selectedLineGeom =
@@ -909,6 +944,50 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
                     />
                   </>
                 )}
+              </g>
+            );
+          })}
+        </g>
+
+        {/* busy-line tags: percent on a dark backing, band-coloured, with a
+            small arrow for the flow direction */}
+        <g style={{ pointerEvents: "none" }}>
+          {tags.map((t) => {
+            const col = loadingColor(t.pct);
+            const ax = t.x0 + t.w - 8 * upp;
+            const ay = t.y0 + t.h / 2;
+            const a = 3.5 * upp;
+            const tri =
+              t.dir === "r" ? `${ax - a},${ay - a} ${ax + a},${ay} ${ax - a},${ay + a}`
+              : t.dir === "l" ? `${ax + a},${ay - a} ${ax - a},${ay} ${ax + a},${ay + a}`
+              : t.dir === "d" ? `${ax - a},${ay - a} ${ax + a},${ay - a} ${ax},${ay + a}`
+              : `${ax - a},${ay + a} ${ax + a},${ay + a} ${ax},${ay - a}`;
+            return (
+              <g key={`tag-${t.g.l.id}`} opacity={lOp(t.g.l.id)}>
+                <rect
+                  x={t.x0}
+                  y={t.y0}
+                  width={t.w}
+                  height={t.h}
+                  rx={3 * upp}
+                  fill="#10181d"
+                  fillOpacity={0.92}
+                  stroke={col}
+                  strokeOpacity={0.6}
+                  strokeWidth={1 * upp}
+                />
+                <text
+                  x={t.x0 + 5 * upp}
+                  y={ay}
+                  dominantBaseline="central"
+                  fontSize={10.5 * upp}
+                  fontWeight={600}
+                  fill={col}
+                  fontFamily="Barlow, sans-serif"
+                >
+                  {`${t.pct}%`}
+                </text>
+                <polygon points={tri} fill={col} />
               </g>
             );
           })}
