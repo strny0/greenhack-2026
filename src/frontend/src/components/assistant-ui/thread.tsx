@@ -318,6 +318,12 @@ const AssistantMessage: FC = () => {
   // for pt-[n] use -mb-[n + 6] & min-h-[n + 6] to preserve compensation
   const ACTION_BAR_PT = "pt-1.5";
   const ACTION_BAR_HEIGHT = `-mb-7.5 min-h-7.5 ${ACTION_BAR_PT}`;
+  // A tool group's own status only says "running" while a call's arguments
+  // stream in, so between lookups it reads as complete. Treat the trailing
+  // group of a message that is still running as live, so the steps stay up
+  // until the answer text starts.
+  const messageRunning = useAuiState((s) => s.message.status?.type === "running");
+  const lastPartIndex = useAuiState((s) => s.message.parts.length - 1);
 
   return (
     <MessagePrimitive.Root
@@ -355,7 +361,10 @@ const AssistantMessage: FC = () => {
               case "group-tool": {
                 // While the agent works, show each lookup as it happens with a
                 // Stop button; once done, fold back to the compact group.
-                if (part.status.type === "running")
+                if (
+                  part.status.type === "running" ||
+                  (messageRunning && part.indices[part.indices.length - 1] === lastPartIndex)
+                )
                   return <LiveSteps indices={part.indices} />;
                 return (
                   <ToolGroupRoot>

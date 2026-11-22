@@ -132,8 +132,6 @@ export function buildSteps(parts: readonly PartLike[], operatorSim: boolean): St
       source = args?.op === "reset" && !operatorSim ? "Live" : "Simulation";
     } else if (CURRENT_HOUR_TOOLS.has(p.toolName) && (operatorSim || sandbox)) {
       source = "Simulation";
-    } else if (p.toolName === "simulation_status") {
-      source = "Simulation";
     }
     const ts = str(args?.timestamp) ?? str(args?.day);
     steps.push({
