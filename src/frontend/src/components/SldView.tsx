@@ -15,7 +15,7 @@ import { OUT_OF_SERVICE_COLOR } from "./styling";
 // Classic SLD palette — single dark color for all bus bars; equipment type is
 // communicated by the attached symbol (G in circle for generators, ↓ for loads,
 // two-coil glyph mid-branch for transformers).
-const BAR_COLOR = "#afc0c8";
+const BAR_COLOR = "#8fa1aa";
 const SYMBOL_COLOR = "#d3d9d6";
 const SLACK_COLOR = "#b07cff";
 
@@ -42,7 +42,7 @@ function screenY(y: number): number {
 // --- SLD primitives -----------------------------------------------------------
 
 const LINE_HIT_WIDTH = 16;  // schematic units; ~10px invisible click band per line
-const BAR_THICKNESS = 8;     // schematic units; ~5px at default zoom
+const BAR_THICKNESS = 6;     // schematic units; ~4px at default zoom
 const ROUTE_OFFSET = 28;     // detour distance for same-y bus pairs
 const PARALLEL_STAGGER = 14; // midY separation per parallel circuit
 
@@ -253,6 +253,17 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
   const [view, setView] = useState<Box>(initial);
   const [tip, setTip] = useState<Tooltip>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
+
+  // Screen size, so text and detail can be sized in pixels rather than in
+  // schematic units (which shrink to nothing at the overview zoom).
+  const [px, setPx] = useState<{ w: number; h: number } | null>(null);
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setPx({ w: el.clientWidth, h: el.clientHeight }));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   const dragRef = useRef<{ x: number; y: number; vx: number; vy: number } | null>(null);
 
   // viewBox tween. `viewRef` mirrors the committed view so an animation always
@@ -386,6 +397,42 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
     return `<b>${labelOf(n)}</b><br/>${role}${gens ? ` · ${gens}` : ""} · ${(n.vm_pu ?? 0).toFixed(3)} p.u.`;
   };
 
+  // Schematic units per screen pixel, and how far in from the overview we are.
+  // Detail appears in steps as the operator zooms (semantic zoom): the
+  // overview shows only the network and its state, equipment glyphs come in
+  // at 2x, and every bus gets its name at 3x.
+  const upp = px ? Math.max(view.w / px.w, view.h / px.h) : view.w / 700;
+  const fitUpp = px ? Math.max(initial.w / px.w, initial.h / px.h) : initial.w / 700;
+  const zoom = fitUpp / upp;
+  // Stroke weights shrink as you zoom in, so lines don't balloon into bands;
+  // they still grow a little, which keeps the zoom feeling physical.
+  const k = Math.pow(Math.max(zoom, 1), -0.75);
+  const bar = BAR_THICKNESS * k;
+  const showEquipment = zoom >= 2;
+  const showAllLabels = zoom >= 3;
+  // Which buses get a name. Must-show ones (selection, alerts, agent mentions)
+  // are placed first; the rest are dropped when they would collide with a
+  // name already placed, so labels never print over each other.
+  const labelled = new Set<string>();
+  {
+    const placed: { x0: number; x1: number; y0: number; y1: number }[] = [];
+    const must = (n: GridNode) =>
+      n.state === "alert" || highlight.has(n.id) || (selected?.kind === "node" && selected.id === n.id);
+    const order = [...frame.nodes].sort((a, b) => Number(must(b)) - Number(must(a)));
+    for (const n of order) {
+      const isMust = must(n);
+      if (!showAllLabels && !isMust) continue;
+      const c = coords[n.id];
+      if (!c) continue;
+      const x0 = c[0] + layout.barLength(n.id) / 2 + 5 * upp;
+      const box = { x0, x1: x0 + labelOf(n).length * 6.4 * upp, y0: screenY(c[1]) - 8 * upp, y1: screenY(c[1]) + 8 * upp };
+      const hit = placed.some((p) => box.x0 < p.x1 && box.x1 > p.x0 && box.y0 < p.y1 && box.y1 > p.y0);
+      if (hit && !isMust) continue;
+      placed.push(box);
+      labelled.add(n.id);
+    }
+  }
+
   const selectedLineGeom =
     selected?.kind === "line" ? branchGeom.find((g) => g?.l.id === selected.id) ?? null : null;
 
@@ -407,34 +454,21 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
       >
         <rect x={initial.x} y={initial.y} width={initial.w * 10} height={initial.h * 10} fill="#1a272e" />
 
-        {/* region groupings — dashed rounded rectangles + label */}
+        {/* region groupings: a faint tonal panel per zone, named in small caps */}
         <g style={{ pointerEvents: "none" }}>
           {regions.map((r) => (
             <g key={`region-${r.zone}`}>
-              <rect
-                x={r.x}
-                y={r.y}
-                width={r.w}
-                height={r.h}
-                rx={16}
-                ry={16}
-                fill="none"
-                stroke="#4a5d67"
-                strokeWidth={1.5}
-                strokeDasharray="10 6"
-                strokeOpacity={0.65}
-              />
+              <rect x={r.x} y={r.y} width={r.w} height={r.h} rx={18} ry={18} fill="#203038" fillOpacity={0.55} />
               <text
-                x={r.x + 14}
-                y={r.y + 24}
-                fontSize={20}
-                fontWeight={700}
+                x={r.x + 10 * upp}
+                y={r.y + r.h - 10 * upp}
+                fontSize={12 * upp}
+                fontWeight={600}
                 fill="#7d8f98"
-                fillOpacity={0.7}
-                fontFamily="sans-serif"
-                letterSpacing={1.5}
+                fontFamily="Barlow, sans-serif"
+                letterSpacing={1.2 * upp}
               >
-                {`Region ${r.zone}`}
+                {`REGION ${r.zone.replace(/^r/i, "")}`}
               </text>
             </g>
           ))}
@@ -444,14 +478,14 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
         <g>
           {branchGeom.map((g) => {
             if (!g) return null;
-            const w = lineWidth(g.l.loading_pct, g.l.kind) + 3;
+            const w = (lineWidth(g.l.loading_pct, g.l.kind) + 3) * k;
             return (
               <path
                 key={`c-${g.l.id}`}
                 d={g.d}
                 fill="none"
                 stroke={CASING_COLOR}
-                strokeOpacity={0.75}
+                strokeOpacity={0.45}
                 strokeWidth={w}
                 strokeLinecap="round"
                 strokeLinejoin="round"
@@ -471,7 +505,7 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
                 fill="none"
                 stroke="#8ed1c1"
                 strokeOpacity={0.7}
-                strokeWidth={14}
+                strokeWidth={14 * k}
                 strokeLinecap="round"
                 strokeLinejoin="round"
               />
@@ -493,7 +527,7 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
                   d={g.d}
                   fill="none"
                   stroke={d.tripped ? OUT_OF_SERVICE_COLOR : "#ff1f1f"}
-                  strokeWidth={lineWidth(g.l.loading_pct, g.l.kind) + 14}
+                  strokeWidth={(lineWidth(g.l.loading_pct, g.l.kind) + 14) * k}
                   strokeLinecap="round"
                   strokeLinejoin="round"
                 />
@@ -513,7 +547,7 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
                 d={g.d}
                 fill="none"
                 stroke={loadingColor(l.loading_pct)}
-                strokeWidth={lineWidth(l.loading_pct, l.kind)}
+                strokeWidth={lineWidth(l.loading_pct, l.kind) * k}
                 strokeOpacity={l.in_service ? 1 : 0.3}
                 strokeDasharray={l.in_service ? undefined : "6 4"}
                 strokeLinecap="round"
@@ -540,7 +574,7 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
                 d={g.d}
                 fill="none"
                 stroke="transparent"
-                strokeWidth={LINE_HIT_WIDTH}
+                strokeWidth={Math.max(LINE_HIT_WIDTH * k, 10 * upp)}
                 strokeLinecap="round"
                 strokeLinejoin="round"
                 pointerEvents="stroke"
@@ -561,7 +595,7 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
             fill="none"
             stroke="#e9ece6"
             strokeOpacity={0.55}
-            strokeWidth={lineWidth(selectedLineGeom.l.loading_pct, selectedLineGeom.l.kind) + 8}
+            strokeWidth={(lineWidth(selectedLineGeom.l.loading_pct, selectedLineGeom.l.kind) + 8) * k}
             strokeLinecap="round"
             strokeLinejoin="round"
             style={{ pointerEvents: "none" }}
@@ -580,9 +614,9 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
               <rect
                 key={`nh-${n.id}`}
                 x={c[0] - len / 2 - 8}
-                y={sy - BAR_THICKNESS / 2 - 8}
+                y={sy - bar / 2 - 8}
                 width={len + 16}
-                height={BAR_THICKNESS + 16}
+                height={bar + 16}
                 rx={4}
                 fill="#8ed1c1"
                 fillOpacity={0.55}
@@ -591,14 +625,31 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
           })}
         </g>
 
-        {/* bus state halo (warn/alert wider stroke beneath bar) */}
-        <g>
+        {/* bus state: an alert gets a red halo; a warning only a thin amber
+            underline, so forty warnings don't paint the whole diagram amber */}
+        <g style={{ pointerEvents: "none" }}>
           {frame.nodes.map((n) => {
             if (n.state === "ok") return null;
             const c = coords[n.id];
             if (!c) return null;
             const len = layout.barLength(n.id);
             const sy = screenY(c[1]);
+            if (n.state === "warn") {
+              const y = sy + bar / 2 + 3 * upp;
+              return (
+                <line
+                  key={`ns-${n.id}`}
+                  x1={c[0] - len / 2}
+                  y1={y}
+                  x2={c[0] + len / 2}
+                  y2={y}
+                  stroke={STATE_STROKE_COLOR.warn}
+                  strokeOpacity={0.9}
+                  strokeWidth={2 * upp}
+                  strokeLinecap="round"
+                />
+              );
+            }
             return (
               <line
                 key={`ns-${n.id}`}
@@ -608,7 +659,7 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
                 y2={sy}
                 stroke={STATE_STROKE_COLOR[n.state]}
                 strokeOpacity={0.85}
-                strokeWidth={BAR_THICKNESS + 6}
+                strokeWidth={bar + 6}
                 strokeLinecap="round"
               />
             );
@@ -633,7 +684,7 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
                   x2={c[0] + len / 2}
                   y2={sy}
                   stroke="#ff1f1f"
-                  strokeWidth={BAR_THICKNESS + 18}
+                  strokeWidth={bar + 18}
                   strokeLinecap="round"
                 />
               );
@@ -644,12 +695,12 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
         {/* transformer glyph — two overlapping circles at the branch midpoint */}
         <g>
           {branchGeom.map((g) => {
-            if (!g || g.l.kind !== "trafo") return null;
-            const r = 5;
+            if (!showEquipment || !g || g.l.kind !== "trafo") return null;
+            const r = 4.5 * upp;
             return (
               <g key={`tr-${g.l.id}`} style={{ pointerEvents: "none" }}>
-                <circle cx={g.midX - r * 0.7} cy={g.midY} r={r} fill="#1a272e" stroke={SYMBOL_COLOR} strokeWidth={1.4} />
-                <circle cx={g.midX + r * 0.7} cy={g.midY} r={r} fill="#1a272e" stroke={SYMBOL_COLOR} strokeWidth={1.4} fillOpacity={0} />
+                <circle cx={g.midX - r * 0.7} cy={g.midY} r={r} fill="#1a272e" stroke={SYMBOL_COLOR} strokeWidth={1.2 * upp} />
+                <circle cx={g.midX + r * 0.7} cy={g.midY} r={r} fill="#1a272e" stroke={SYMBOL_COLOR} strokeWidth={1.2 * upp} fillOpacity={0} />
               </g>
             );
           })}
@@ -670,7 +721,7 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
                 x2={c[0] + len / 2}
                 y2={sy}
                 stroke={BAR_COLOR}
-                strokeWidth={BAR_THICKNESS}
+                strokeWidth={bar}
                 strokeLinecap="round"
                 style={{ cursor: "pointer" }}
                 onMouseEnter={(e) => setTipFor(e, nodeTip(n))}
@@ -685,6 +736,7 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
         {/* equipment symbols: G in circle above (gen/slack), ↓ below (load) */}
         <g>
           {frame.nodes.map((n) => {
+            if (!showEquipment) return null;
             const c = coords[n.id];
             if (!c) return null;
             const x = c[0];
@@ -698,29 +750,29 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
                   <>
                     <line
                       x1={x}
-                      y1={sy - BAR_THICKNESS / 2}
+                      y1={sy - bar / 2}
                       x2={x}
-                      y2={sy - 16}
+                      y2={sy - 10 * upp}
                       stroke={SYMBOL_COLOR}
-                      strokeWidth={1.4}
+                      strokeWidth={1.2 * upp}
                     />
                     <circle
                       cx={x}
-                      cy={sy - 24}
-                      r={8}
+                      cy={sy - 17 * upp}
+                      r={7 * upp}
                       fill={isSlack ? SLACK_COLOR : "#1a272e"}
                       stroke={SYMBOL_COLOR}
-                      strokeWidth={1.4}
+                      strokeWidth={1.2 * upp}
                     />
                     <text
                       x={x}
-                      y={sy - 24}
+                      y={sy - 17 * upp}
                       textAnchor="middle"
                       dominantBaseline="central"
-                      fontSize={11}
+                      fontSize={9 * upp}
                       fontWeight={700}
                       fill={isSlack ? "#1a272e" : SYMBOL_COLOR}
-                      fontFamily="serif"
+                      fontFamily="Barlow, sans-serif"
                     >
                       {isSlack ? "S" : "G"}
                     </text>
@@ -730,19 +782,48 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
                   <>
                     <line
                       x1={x}
-                      y1={sy + BAR_THICKNESS / 2}
+                      y1={sy + bar / 2}
                       x2={x}
-                      y2={sy + 14}
+                      y2={sy + 9 * upp}
                       stroke={SYMBOL_COLOR}
-                      strokeWidth={1.4}
+                      strokeWidth={1.2 * upp}
                     />
                     <polygon
-                      points={`${x - 5},${sy + 14} ${x + 5},${sy + 14} ${x},${sy + 24}`}
+                      points={`${x - 4 * upp},${sy + 9 * upp} ${x + 4 * upp},${sy + 9 * upp} ${x},${sy + 16 * upp}`}
                       fill={SYMBOL_COLOR}
                     />
                   </>
                 )}
               </g>
+            );
+          })}
+        </g>
+
+        {/* bus names: all of them when zoomed in, otherwise only the ones that
+            matter (alerts, the selection, and what the agent mentioned) */}
+        <g style={{ pointerEvents: "none" }}>
+          {frame.nodes.map((n) => {
+            if (!labelled.has(n.id)) return null;
+            const c = coords[n.id];
+            if (!c) return null;
+            const len = layout.barLength(n.id);
+            const sy = screenY(c[1]);
+            const fs = 12 * upp;
+            return (
+              <text
+                key={`lbl-${n.id}`}
+                x={c[0] + len / 2 + 5 * upp}
+                y={sy}
+                dominantBaseline="central"
+                fontSize={fs}
+                fill="#d3d9d6"
+                stroke="#1a272e"
+                strokeWidth={3 * upp}
+                paintOrder="stroke"
+                fontFamily="Barlow, sans-serif"
+              >
+                {labelOf(n)}
+              </text>
             );
           })}
         </g>
@@ -759,9 +840,9 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
             return (
               <rect
                 x={c[0] - len / 2 - 4}
-                y={sy - BAR_THICKNESS / 2 - 4}
+                y={sy - bar / 2 - 4}
                 width={len + 8}
-                height={BAR_THICKNESS + 8}
+                height={bar + 8}
                 rx={3}
                 fill="none"
                 stroke="#e9ece6"

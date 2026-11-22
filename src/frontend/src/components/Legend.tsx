@@ -88,6 +88,13 @@ export default function Legend({ showBusIcons = false }: { showBusIcons?: boolea
         />
         Voltage alert ring
       </div>
+      <div className="my-1 flex items-center gap-2">
+        <span className="flex w-5 flex-col gap-[2px]">
+          <span className="h-[3px] rounded-sm bg-[#8fa1aa]" />
+          <span className="h-[2px] rounded-sm bg-[#f5b915]" />
+        </span>
+        Voltage warning (schematic)
+      </div>
 
       {showBusIcons && (
         <>
