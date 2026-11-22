@@ -30,19 +30,25 @@ interface Props {
   simulating?: boolean;
 }
 
+// Esri's dark grey canvas: keyless, and dark so the map matches the rest of the
+// UI and the loading colours stay readable. (Carto's basemaps now need an API
+// key and render an "API KEY REQUIRED" watermark without one.)
 const STYLE: maplibregl.StyleSpecification = {
   version: 8,
   sources: {
-    carto: {
+    basemap: {
       type: "raster",
-      tiles: ["https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png"],
+      tiles: [
+        "https://services.arcgisonline.com/arcgis/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
+      ],
       tileSize: 256,
-      attribution: "© CARTO © OpenStreetMap contributors",
+      maxzoom: 16,
+      attribution: "Tiles © Esri — Esri, HERE, Garmin, © OpenStreetMap contributors",
     },
   },
   layers: [
-    { id: "bg", type: "background", paint: { "background-color": "#f5f6f8" } },
-    { id: "carto", type: "raster", source: "carto", paint: { "raster-opacity": 0.95 } },
+    { id: "bg", type: "background", paint: { "background-color": "#1b1f24" } },
+    { id: "basemap", type: "raster", source: "basemap", paint: { "raster-opacity": 0.9 } },
   ],
 };
 
@@ -289,7 +295,8 @@ export default function MapView({ frame, meta, highlight, selected, onSelect, zo
             "interpolate", ["linear"], ["get", "cap"],
             1, 0.9, 3, 1.6, 8, 2.5, 15, 3.6,
           ],
-          "line-opacity": 0.7,
+          // Quieter on the dark basemap so the flow hint never outshouts loading.
+          "line-opacity": 0.35,
           "line-dasharray": [0, 4, 3],
         },
       });
