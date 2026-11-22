@@ -89,3 +89,8 @@
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
 }
+/* Tailwind v4 borders default to currentColor; keep every rule on the quiet
+   "Rule" tone so only state colours (amber, red, sea glass) stand out. */
+@layer base {
+  *, ::before, ::after { border-color: var(--border); }
+}

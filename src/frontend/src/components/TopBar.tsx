@@ -38,13 +38,15 @@ function Kpi({
   label,
   value,
   tone,
+  className,
 }: {
   label: string;
   value: string;
   tone?: "bad" | "warn";
+  className?: string;
 }) {
   return (
-    <div className="flex flex-col">
+    <div className={cn("flex flex-col", className)}>
       <dt className="whitespace-nowrap text-[12px] text-muted-foreground">{label}</dt>
       <dd
         className={cn(
@@ -67,7 +69,7 @@ function Brand() {
         <circle cx="13" cy="13" r="11" fill="none" stroke="var(--primary)" strokeWidth="2" />
         <path d="M3 13h5l2.5-5 5 10 2.5-5h5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
       </svg>
-      <span className="text-lg font-bold tracking-[-0.01em]">Smooth Operator</span>
+      <span className="whitespace-nowrap text-lg font-bold tracking-[-0.01em]">Smooth Operator</span>
     </div>
   );
 }
@@ -92,7 +94,7 @@ export default function TopBar({
 }: Props) {
   const s = frame.summary;
   return (
-    <header className="z-10 flex flex-wrap items-center gap-x-6 gap-y-2 border-b bg-card px-5 py-2.5">
+    <header className="z-10 flex flex-wrap items-center gap-x-6 gap-y-2 border-b bg-card px-5 py-2.5 lg:flex-nowrap">
       <Brand />
 
       <dl className="m-0 hidden flex-1 gap-5 lg:flex">
@@ -102,6 +104,7 @@ export default function TopBar({
         />
         <Kpi label="Load" value={`${s.total_load_mw.toLocaleString()} MW`} />
         <Kpi
+          className="hidden xl:flex"
           label="Balancing"
           value={`${s.slack_mw > 0 ? "+" : ""}${s.slack_mw} MW`}
         />
@@ -125,10 +128,12 @@ export default function TopBar({
           label="Load flow"
           value={s.converged ? "Converged" : "No solution"}
           tone={s.converged ? undefined : "bad"}
+          // Only worth the space on narrower screens when it has failed.
+          className={s.converged ? "hidden xl:flex" : undefined}
         />
       </dl>
 
-      <div className="flex w-full flex-wrap items-center gap-3 md:w-auto md:flex-nowrap md:min-w-[360px] md:flex-1 lg:min-w-[440px] lg:flex-none">
+      <div className="flex w-full flex-wrap items-center gap-3 md:w-auto md:flex-nowrap md:min-w-[360px] md:flex-1 lg:min-w-[400px] lg:flex-none">
         <Button
           variant="outline"
           size="icon"

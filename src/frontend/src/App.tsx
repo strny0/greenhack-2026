@@ -443,19 +443,19 @@ export default function App() {
           />
         )}
         <Legend showBusIcons={mode === "map"} />
-        {(selectedNode || selectedLine) && (
-          <DetailPanel
-            node={selectedNode}
-            line={selectedLine}
-            baseNode={baseNode}
-            baseLine={baseLine}
-            windowStartTs={windowStartTs}
-            windowCount={renderFrames.length}
-            onClose={() => setSelected(null)}
-            onGoTo={zoom}
-          />
-        )}
       </div>
+      {(selectedNode || selectedLine) && (
+        <DetailPanel
+          node={selectedNode}
+          line={selectedLine}
+          baseNode={baseNode}
+          baseLine={baseLine}
+          windowStartTs={windowStartTs}
+          windowCount={renderFrames.length}
+          onClose={() => setSelected(null)}
+          onGoTo={zoom}
+        />
+      )}
       <ComingHours
         frames={renderFrames}
         idx={idx}
