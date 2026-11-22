@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ChevronDown } from "lucide-react";
 import type { IconCategory } from "@/lib/gridmeta";
 import { iconDataUrl } from "./mapIcons";
+import { LOADING_BANDS, bandLabel } from "./styling";
 
 /** Reactive media-query match (used to collapse the legend by default on mobile). */
 function useMediaQuery(query: string): boolean {
@@ -58,15 +59,10 @@ export default function Legend({ showBusIcons = false }: { showBusIcons?: boolea
       {open && (
         <div className="mt-2">
       <h4 className="mb-1.5 text-[12px] font-medium text-muted-foreground">Line loading</h4>
-      {[
-        ["#5a6a72", "Under 50%, normal", 2],
-        ["#d9a441", "50 to 80%, watch", 3],
-        ["#ee7a3b", "80 to 100%, act soon", 4],
-        ["#f0503c", "Over 100%, overloaded", 5],
-      ].map(([c, label, h]) => (
-        <div key={label as string} className="my-1 flex items-center gap-2">
-          <span className="w-[22px] rounded-sm" style={{ background: c as string, height: h as number }} />
-          <span>{label}</span>
+      {LOADING_BANDS.map((b, i) => (
+        <div key={b.label} className="my-1 flex items-center gap-2">
+          <span className="w-[22px] rounded-sm" style={{ background: b.color, height: 2 + i }} />
+          <span>{bandLabel(b)}</span>
         </div>
       ))}
       <h4 className="mb-1.5 mt-2 text-[12px] font-medium text-muted-foreground">Nodes</h4>
