@@ -44,6 +44,7 @@ function screenY(y: number): number {
 const LINE_HIT_WIDTH = 16;  // schematic units; ~10px invisible click band per line
 const BAR_HIT_PX = 12;      // on-screen px; invisible click band around each bus bar
 const BAR_THICKNESS = 6;     // schematic units; ~4px at default zoom
+const FADED = 0.25;          // opacity of what lies outside the selection focus
 const LANDMARK_COUNT = 14;   // buses named at the overview, collisions permitting
 const LANDMARK_MW_PER_LINE = 60; // a connection counts like 60 MW in the ranking
 const ROUTE_OFFSET = 28;     // detour distance for same-y bus pairs
@@ -165,6 +166,7 @@ function routePath(
 
 // --- component ----------------------------------------------------------------
 
+type LabelSpot = { left: boolean; dy: number };
 type Tooltip = { x: number; y: number; html: string } | null;
 
 export default function SldView({ frame, meta, highlight, selected, onSelect, zoomTo, baseFrame, simulating }: Props) {
@@ -433,16 +435,48 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
   const bar = BAR_THICKNESS * k;
   const showEquipment = zoom >= 2;
   const showAllLabels = zoom >= 3;
+  // Selection focus: the selected element and its 1-hop neighbourhood (for a
+  // bus, its lines and their far-end buses; for a line, its two buses, the
+  // other lines at them and their far ends) stay at full strength and get
+  // names; everything else fades back.
+  const focus = useMemo(() => {
+    if (!selected) return null;
+    const nodes = new Set<string>();
+    const lines = new Set<string>();
+    const seeds: string[] = [];
+    if (selected.kind === "node") seeds.push(selected.id);
+    else {
+      const l = frame.lines.find((x) => x.id === selected.id);
+      if (!l) return null;
+      lines.add(l.id);
+      seeds.push(l.from_node, l.to_node);
+    }
+    for (const id of seeds) nodes.add(id);
+    for (const l of frame.lines) {
+      if (seeds.includes(l.from_node) || seeds.includes(l.to_node)) {
+        lines.add(l.id);
+        nodes.add(l.from_node);
+        nodes.add(l.to_node);
+      }
+    }
+    return { nodes, lines };
+  }, [selected, frame.lines]);
+  const nOp = (id: string) => (focus && !focus.nodes.has(id) ? FADED : 1);
+  const lOp = (id: string) => (focus && !focus.lines.has(id) ? FADED : 1);
+
   // Which buses get a name. Must-show ones (selection, alerts, agent mentions)
   // are placed first, then the landmarks, then (zoomed in) everything else;
   // anything but a must-show is dropped when it would collide with a name
   // already placed, so labels never print over each other.
   const labelled = new Set<string>();
-  const labelLeft = new Set<string>();
+  const labelSpot = new Map<string, LabelSpot>();
   {
     const placed: { x0: number; x1: number; y0: number; y1: number }[] = [];
     const must = (n: GridNode) =>
-      n.state === "alert" || highlight.has(n.id) || (selected?.kind === "node" && selected.id === n.id);
+      n.state === "alert" ||
+      highlight.has(n.id) ||
+      (selected?.kind === "node" && selected.id === n.id) ||
+      !!focus?.nodes.has(n.id);
     const rank = (n: GridNode) => (must(n) ? 2 : landmarks.has(n.id) ? 1 : 0);
     const order = [...frame.nodes].sort((a, b) => rank(b) - rank(a));
     for (const n of order) {
@@ -450,17 +484,31 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
       if (!showAllLabels && rank(n) === 0) continue;
       const c = coords[n.id];
       if (!c) continue;
-      // Right of the bar, unless that runs off the visible diagram; then left.
+      // Try right of the bar, then left, then nudged up or down; skip spots
+      // that run off the visible diagram or hit a name already placed. A
+      // must-show that fits nowhere still goes on the right.
       const half = layout.barLength(n.id) / 2 + 5 * upp;
       const w = labelOf(n).length * 6.4 * upp;
-      const left = c[0] + half + w > view.x + view.w;
-      const x0 = left ? c[0] - half - w : c[0] + half;
-      const box = { x0, x1: x0 + w, y0: screenY(c[1]) - 8 * upp, y1: screenY(c[1]) + 8 * upp };
-      const hit = placed.some((p) => box.x0 < p.x1 && box.x1 > p.x0 && box.y0 < p.y1 && box.y1 > p.y0);
-      if (hit && !isMust) continue;
-      placed.push(box);
+      const sy = screenY(c[1]);
+      const step = 14 * upp;
+      const spots: LabelSpot[] = [
+        { left: false, dy: 0 }, { left: true, dy: 0 },
+        { left: false, dy: -step }, { left: false, dy: step },
+        { left: true, dy: -step }, { left: true, dy: step },
+      ];
+      const boxOf = (sp: LabelSpot) => {
+        const x0 = sp.left ? c[0] - half - w : c[0] + half;
+        return { x0, x1: x0 + w, y0: sy + sp.dy - 8 * upp, y1: sy + sp.dy + 8 * upp };
+      };
+      const fits = (b: { x0: number; x1: number; y0: number; y1: number }) =>
+        b.x0 >= view.x && b.x1 <= view.x + view.w &&
+        !placed.some((p) => b.x0 < p.x1 && b.x1 > p.x0 && b.y0 < p.y1 && b.y1 > p.y0);
+      const spot = spots.find((sp) => fits(boxOf(sp)));
+      if (!spot && !isMust) continue;
+      const chosen = spot ?? spots[0];
+      placed.push(boxOf(chosen));
       labelled.add(n.id);
-      if (left) labelLeft.add(n.id);
+      labelSpot.set(n.id, chosen);
     }
   }
 
@@ -513,6 +561,7 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
             return (
               <path
                 key={`c-${g.l.id}`}
+                opacity={lOp(g.l.id)}
                 d={g.d}
                 fill="none"
                 stroke={CASING_COLOR}
@@ -575,6 +624,7 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
             return (
               <path
                 key={`l-${l.id}`}
+                opacity={lOp(l.id)}
                 d={g.d}
                 fill="none"
                 stroke={loadingColor(l.loading_pct)}
@@ -670,6 +720,7 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
               return (
                 <line
                   key={`ns-${n.id}`}
+                  opacity={nOp(n.id)}
                   x1={c[0] - len / 2}
                   y1={y}
                   x2={c[0] + len / 2}
@@ -684,6 +735,7 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
             return (
               <line
                 key={`ns-${n.id}`}
+                opacity={nOp(n.id)}
                 x1={c[0] - len / 2}
                 y1={sy}
                 x2={c[0] + len / 2}
@@ -729,7 +781,7 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
             if (!showEquipment || !g || g.l.kind !== "trafo") return null;
             const r = 4.5 * upp;
             return (
-              <g key={`tr-${g.l.id}`} style={{ pointerEvents: "none" }}>
+              <g key={`tr-${g.l.id}`} opacity={lOp(g.l.id)} style={{ pointerEvents: "none" }}>
                 <circle cx={g.midX - r * 0.7} cy={g.midY} r={r} fill="#1a272e" stroke={SYMBOL_COLOR} strokeWidth={1.2 * upp} />
                 <circle cx={g.midX + r * 0.7} cy={g.midY} r={r} fill="#1a272e" stroke={SYMBOL_COLOR} strokeWidth={1.2 * upp} fillOpacity={0} />
               </g>
@@ -747,6 +799,7 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
             return (
               <line
                 key={`n-${n.id}`}
+                opacity={nOp(n.id)}
                 x1={c[0] - len / 2}
                 y1={sy}
                 x2={c[0] + len / 2}
@@ -807,7 +860,7 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
             const showLoad = n.n_loads > 0 || n.type === "load";
             const isSlack = n.is_slack || n.type === "slack";
             return (
-              <g key={`sym-${n.id}`} style={{ pointerEvents: "none" }}>
+              <g key={`sym-${n.id}`} opacity={nOp(n.id)} style={{ pointerEvents: "none" }}>
                 {showGen && (
                   <>
                     <line
@@ -874,9 +927,10 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
             return (
               <text
                 key={`lbl-${n.id}`}
-                x={labelLeft.has(n.id) ? c[0] - len / 2 - 5 * upp : c[0] + len / 2 + 5 * upp}
-                textAnchor={labelLeft.has(n.id) ? "end" : "start"}
-                y={sy}
+                opacity={nOp(n.id)}
+                x={labelSpot.get(n.id)?.left ? c[0] - len / 2 - 5 * upp : c[0] + len / 2 + 5 * upp}
+                textAnchor={labelSpot.get(n.id)?.left ? "end" : "start"}
+                y={sy + (labelSpot.get(n.id)?.dy ?? 0)}
                 dominantBaseline="central"
                 fontSize={fs}
                 fill="#d3d9d6"
