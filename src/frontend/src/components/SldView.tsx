@@ -44,6 +44,8 @@ function screenY(y: number): number {
 const LINE_HIT_WIDTH = 16;  // schematic units; ~10px invisible click band per line
 const BAR_HIT_PX = 12;      // on-screen px; invisible click band around each bus bar
 const BAR_THICKNESS = 6;     // schematic units; ~4px at default zoom
+const LANDMARK_COUNT = 14;   // buses named at the overview, collisions permitting
+const LANDMARK_MW_PER_LINE = 60; // a connection counts like 60 MW in the ranking
 const ROUTE_OFFSET = 28;     // detour distance for same-y bus pairs
 const PARALLEL_STAGGER = 14; // midY separation per parallel circuit
 
@@ -242,6 +244,26 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
     });
   }, [frame.lines, coords, layout]);
 
+  // Landmarks: the buses an operator orients by, always named at the overview.
+  // Ranked by the power they handle (generation + load) plus how many lines
+  // meet there, so big plants, big loads and hubs come first.
+  const landmarks = useMemo(() => {
+    const degree = new Map<string, number>();
+    for (const l of frame.lines) {
+      degree.set(l.from_node, (degree.get(l.from_node) ?? 0) + 1);
+      degree.set(l.to_node, (degree.get(l.to_node) ?? 0) + 1);
+    }
+    const score = (n: GridNode) =>
+      Math.max(n.production_mw, 0) + Math.max(n.consumption_mw, 0) + LANDMARK_MW_PER_LINE * (degree.get(n.id) ?? 0);
+    return new Set(
+      [...frame.nodes]
+        .filter((n) => coords[n.id])
+        .sort((a, b) => score(b) - score(a))
+        .slice(0, LANDMARK_COUNT)
+        .map((n) => n.id),
+    );
+  }, [frame.nodes, frame.lines, coords]);
+
   const initial = useMemo(() => {
     const w = bbox.x_max - bbox.x_min;
     const h = bbox.y_max - bbox.y_min;
@@ -412,25 +434,33 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
   const showEquipment = zoom >= 2;
   const showAllLabels = zoom >= 3;
   // Which buses get a name. Must-show ones (selection, alerts, agent mentions)
-  // are placed first; the rest are dropped when they would collide with a
-  // name already placed, so labels never print over each other.
+  // are placed first, then the landmarks, then (zoomed in) everything else;
+  // anything but a must-show is dropped when it would collide with a name
+  // already placed, so labels never print over each other.
   const labelled = new Set<string>();
+  const labelLeft = new Set<string>();
   {
     const placed: { x0: number; x1: number; y0: number; y1: number }[] = [];
     const must = (n: GridNode) =>
       n.state === "alert" || highlight.has(n.id) || (selected?.kind === "node" && selected.id === n.id);
-    const order = [...frame.nodes].sort((a, b) => Number(must(b)) - Number(must(a)));
+    const rank = (n: GridNode) => (must(n) ? 2 : landmarks.has(n.id) ? 1 : 0);
+    const order = [...frame.nodes].sort((a, b) => rank(b) - rank(a));
     for (const n of order) {
       const isMust = must(n);
-      if (!showAllLabels && !isMust) continue;
+      if (!showAllLabels && rank(n) === 0) continue;
       const c = coords[n.id];
       if (!c) continue;
-      const x0 = c[0] + layout.barLength(n.id) / 2 + 5 * upp;
-      const box = { x0, x1: x0 + labelOf(n).length * 6.4 * upp, y0: screenY(c[1]) - 8 * upp, y1: screenY(c[1]) + 8 * upp };
+      // Right of the bar, unless that runs off the visible diagram; then left.
+      const half = layout.barLength(n.id) / 2 + 5 * upp;
+      const w = labelOf(n).length * 6.4 * upp;
+      const left = c[0] + half + w > view.x + view.w;
+      const x0 = left ? c[0] - half - w : c[0] + half;
+      const box = { x0, x1: x0 + w, y0: screenY(c[1]) - 8 * upp, y1: screenY(c[1]) + 8 * upp };
       const hit = placed.some((p) => box.x0 < p.x1 && box.x1 > p.x0 && box.y0 < p.y1 && box.y1 > p.y0);
       if (hit && !isMust) continue;
       placed.push(box);
       labelled.add(n.id);
+      if (left) labelLeft.add(n.id);
     }
   }
 
@@ -844,7 +874,8 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
             return (
               <text
                 key={`lbl-${n.id}`}
-                x={c[0] + len / 2 + 5 * upp}
+                x={labelLeft.has(n.id) ? c[0] - len / 2 - 5 * upp : c[0] + len / 2 + 5 * upp}
+                textAnchor={labelLeft.has(n.id) ? "end" : "start"}
                 y={sy}
                 dominantBaseline="central"
                 fontSize={fs}
