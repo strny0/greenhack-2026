@@ -80,7 +80,11 @@ export const api = {
     timestamp: string;
     disconnect_lines?: string[];
     trip_nodes?: string[];
+    trip_gens?: string[];
     load_scale?: number;
+    gen_vm_pu?: Record<string, number>;
+    reactive_mvar?: Record<string, number>;
+    redispatch_mw?: Record<string, number>;
   }): Promise<WhatIfResponse> =>
     fetch("/api/whatif", {
       method: "POST",

@@ -502,6 +502,104 @@ def build_alerts(frame: StateFrame) -> list[Alert]:
 _n1_cache: "OrderedDict[str, list[ContingencyResult]]" = OrderedDict()
 
 
+_COLLAPSE_LOAD_STEPS = (0.95, 0.9, 0.8, 0.7, 0.5)
+
+
+def _diagnose_nonconvergence(net) -> dict:
+    """Explain a trip with no AC solution (``net`` has the element already out).
+
+    Islanding and voltage collapse need different operator responses, so tell
+    them apart instead of reporting a bare "did not converge":
+      * islanding: the in-service network splits; report what is cut off from
+        the slack (its buses, load and generation);
+      * voltage collapse: still one network, the DC flow solves, and the AC flow
+        only solves again with less load. Report the DC peak loading and the
+        highest system-load % at which the AC flow solves.
+    Restores the net's loads before returning.
+    """
+    import networkx as nx
+    import pandapower.topology as top
+
+    g = top.create_nxgraph(net, respect_switches=True, include_out_of_service=False)
+    slack_buses = {int(b) for b in net.ext_grid.loc[net.ext_grid["in_service"].astype(bool), "bus"]}
+    live = net.bus.index[net.bus["in_service"].astype(bool)]
+    reachable: set[int] = set()
+    for s in slack_buses:
+        if s in g:
+            reachable |= nx.node_connected_component(g, s)
+    cut = [int(b) for b in live if int(b) not in reachable]
+    if cut:
+        cut_set = set(cut)
+        ld = net.load[net.load["in_service"].astype(bool) & net.load["bus"].isin(cut_set)]
+        gn = net.gen[net.gen["in_service"].astype(bool) & net.gen["bus"].isin(cut_set)]
+        return {
+            "failure_mode": "islanding",
+            "island_buses": [str(net.bus.at[b, "name"]) for b in cut][:20],
+            "island_load_mw": round(float(ld["p_mw"].sum()), 1),
+            "island_gen_mw": round(float(gn["p_mw"].sum()), 1),
+        }
+
+    out: dict = {"failure_mode": "voltage_collapse"}
+    try:
+        pp.rundcpp(net)
+        out["dc_max_loading_pct"] = round(float(np.nanmax(net.res_line["loading_percent"])), 1)
+    except Exception:
+        pass
+    p0, q0 = net.load["p_mw"].copy(), net.load["q_mvar"].copy()
+    try:
+        for f in _COLLAPSE_LOAD_STEPS:
+            net.load["p_mw"], net.load["q_mvar"] = p0 * f, q0 * f
+            if _solve(net):
+                out["solves_at_load_pct"] = round(f * 100)
+                break
+    finally:
+        net.load["p_mw"], net.load["q_mvar"] = p0, q0
+    return out
+
+
+_setpoint_cache: "OrderedDict[str, dict]" = OrderedDict()
+
+
+def voltage_setpoints(timestamp: str) -> dict:
+    """Voltage set-points of in-service generators and the slack at an hour.
+
+    In an AC load flow a generator bus is a PV bus: its voltage is HELD at the
+    unit's scheduled set-point (vm_pu), not solved for. So a bus reading 1.20 p.u.
+    is usually a unit scheduled at 1.20, or a bus next to one, and not a solver
+    clamp. Returns ``by_bus`` (bus id -> highest in-service unit set-point),
+    ``slack`` (bus id -> set-point) and a ``summary`` of the unit set-points.
+    """
+    ts = store.nearest_timestamp(timestamp)
+    cached = _setpoint_cache.get(ts)
+    if cached is not None:
+        return cached
+    net = store.read_net(ts)
+    names = net.bus["name"].astype(str)
+    gens = net.gen[net.gen["in_service"].astype(bool) & (net.gen["vm_pu"] > 0.5)]
+    by_bus: dict[str, float] = {}
+    for _, g in gens.iterrows():
+        b = names.at[int(g["bus"])]
+        by_bus[b] = round(max(by_bus.get(b, 0.0), float(g["vm_pu"])), 3)
+    slack = {
+        names.at[int(r["bus"])]: round(float(r["vm_pu"]), 3)
+        for _, r in net.ext_grid.iterrows()
+        if bool(r["in_service"])
+    }
+    vm = gens["vm_pu"].astype(float)
+    summary = {
+        "n_units": int(len(vm)),
+        "median_pu": round(float(vm.median()), 3) if len(vm) else None,
+        "min_pu": round(float(vm.min()), 3) if len(vm) else None,
+        "max_pu": round(float(vm.max()), 3) if len(vm) else None,
+        "share_at_or_above_1_15_pu": round(float((vm >= 1.15).mean()), 2) if len(vm) else None,
+    }
+    out = {"by_bus": by_bus, "slack": slack, "summary": summary}
+    _setpoint_cache[ts] = out
+    if len(_setpoint_cache) > config.FRAME_CACHE_SIZE:
+        _setpoint_cache.popitem(last=False)
+    return out
+
+
 def run_n1(timestamp: str, limit: int | None = None) -> list[ContingencyResult]:
     """Trip each in-service line one at a time, re-solve, rank by stress.
 
@@ -553,9 +651,9 @@ def run_n1(timestamp: str, limit: int | None = None) -> list[ContingencyResult]:
                             "loading_pct": round(float(val), 1),
                         }
                     )
-            max_loading = float(
-                np.nanmax(res.drop(index=idx)) if len(res) > 1 else 0.0
-            )
+            rest = res.drop(index=idx)
+            max_loading = float(np.nanmax(rest)) if len(rest) else 0.0
+            worst = str(net.line.at[rest.idxmax(), "name"]) if rest.notna().any() else None
             overloaded.sort(key=lambda o: -o["loading_pct"])
             results.append(
                 ContingencyResult(
@@ -565,6 +663,7 @@ def run_n1(timestamp: str, limit: int | None = None) -> list[ContingencyResult]:
                     max_loading_pct=round(max_loading, 1),
                     n_overloads=len(overloaded),
                     overloaded=overloaded[:10],
+                    worst_line_id=worst,
                 )
             )
         else:
@@ -576,11 +675,12 @@ def run_n1(timestamp: str, limit: int | None = None) -> list[ContingencyResult]:
                     max_loading_pct=0.0,
                     n_overloads=0,
                     overloaded=[],
+                    **_diagnose_nonconvergence(net),
                 )
             )
         net.line.at[idx, "in_service"] = True
 
-    # rank: non-converged (islanding) first, then by worst resulting loading
+    # rank: non-converged (islanding / collapse) first, then by worst resulting loading
     results.sort(key=lambda r: (r.converged, -r.max_loading_pct))
 
     _n1_cache[ts] = results
@@ -822,36 +922,209 @@ def assess_deviation(timestamp: str) -> dict:
     }
 
 
+# --- reserves ----------------------------------------------------------------
+
+
+def reserves(timestamp: str, spec: ScenarioSpec | None = None) -> dict:
+    """Generation reserve at an hour (optionally after a scenario, whose lost
+    power has already been picked up by the online units).
+
+    * spinning: headroom (max_p - p) of online controllable units, i.e. what can
+      respond within minutes;
+    * offline: capacity of in-service controllable units at 0 MW (needs a start);
+    * largest online unit: the classic N-1 reserve requirement. The margin is
+      spinning minus that unit, so a negative margin means the grid could not
+      cover its biggest single unit trip from spinning reserve.
+    Solar, wind and run-of-river hydro are not dispatchable, so they are left
+    out. Ratings are the dataset's max_p_mw. Units are named by fuel and bus
+    (the dataset's unit ids mean nothing to an operator).
+    """
+    ts = store.nearest_timestamp(timestamp)
+    net = store.read_net(ts)
+    pickup = _apply_scenario(net, spec) if spec is not None else None
+    g = net.gen[net.gen["in_service"].astype(bool) & net.gen["controllable"].fillna(False).astype(bool)].copy()
+    g["head"] = (g["max_p_mw"] - g["p_mw"]).clip(lower=0)
+    g["fuel"] = g["name"].map(_gen_fuel)
+    online = g[g["p_mw"] > 0]
+    offline = g[g["p_mw"] <= 0]
+    names = net.bus["name"].astype(str)
+    spinning = float(online["head"].sum())
+    by_fuel = (
+        online.groupby("fuel")["head"].sum().sort_values(ascending=False).round(0)
+    )
+    biggest = online.loc[online["p_mw"].idxmax()] if len(online) else None
+    # largest single bus (a whole plant), since trip_gen trips all units at a bus
+    plant = online.groupby("bus")["p_mw"].sum().sort_values(ascending=False)
+    out = {
+        "timestamp": ts,
+        "spinning_reserve_mw": round(spinning, 0),
+        "offline_capacity_mw": round(float(offline["max_p_mw"].sum()), 0),
+        "online_units": int(len(online)),
+        "spinning_by_fuel_mw": {k: float(v) for k, v in by_fuel.items() if v >= 1},
+        "largest_online_unit": None if biggest is None else {
+            "fuel": str(biggest["fuel"]), "bus": names.at[int(biggest["bus"])],
+            "p_mw": round(float(biggest["p_mw"]), 0),
+        },
+        "largest_online_plant": None if not len(plant) else {
+            "bus": names.at[int(plant.index[0])], "p_mw": round(float(plant.iloc[0]), 0),
+        },
+        "top_headroom": [
+            {"fuel": str(r["fuel"]), "bus": names.at[int(r["bus"])], "headroom_mw": round(float(r["head"]), 0)}
+            for _, r in online.sort_values("head", ascending=False).head(6).iterrows()
+        ],
+    }
+    if biggest is not None:
+        out["margin_after_largest_unit_mw"] = round(spinning - float(biggest["p_mw"]) - float(biggest["head"]), 0)
+    if len(plant):
+        lost_plant_head = float(online.loc[online["bus"] == plant.index[0], "head"].sum())
+        out["margin_after_largest_plant_mw"] = round(spinning - float(plant.iloc[0]) - lost_plant_head, 0)
+    if pickup is not None:
+        out["pickup"] = pickup
+    return out
+
+
 # --- what-if scenarios -------------------------------------------------------
 
 LOAD_SURGE_SCALE = 1.5  # global load multiplier for the "load surge" preset
 
 
-def _apply_scenario(net, disconnect_lines, trip_nodes, load_scale) -> None:
-    """Mutate a pandapower net in place: take lines out of service, trip buses
-    (drop their gens/loads), and/or scale all load. Shared by run_whatif and the
-    whole-day simulation path so both behave identically."""
+def _gen_fuel(name: str) -> str:
+    """Fuel of a unit from its dataset name (``combined_cycle_gas_012`` -> ``combined_cycle_gas``)."""
+    return str(name).rsplit("_", 1)[0]
+
+
+def _pickup_units(net):
+    """Units that follow a power imbalance: in service, controllable (so not
+    solar, wind or run-of-river) and online (producing). Returns their indices."""
+    g = net.gen
+    mask = g["in_service"].astype(bool) & g["controllable"].fillna(False).astype(bool) & (g["p_mw"] > 0)
+    return g.index[mask]
+
+
+def share_pickup(net, imbalance_mw: float) -> dict:
+    """Share a power imbalance across the online controllable units, in
+    proportion to their size (equal-droop primary response), within each unit's
+    [min_p, max_p] range. Positive ``imbalance_mw`` = generation must rise.
+
+    Without this, every lost MW would come from the single slack bus, which
+    doubles losses and makes flows near the slack look far worse than a real
+    grid, where every governor responds. Whatever the units cannot cover (they
+    hit their limits) is left to the slack. Mutates ``net.gen.p_mw``."""
+    out = {"imbalance_mw": round(imbalance_mw, 1), "shared_mw": 0.0, "slack_mw": round(imbalance_mw, 1), "units": []}
+    if abs(imbalance_mw) < 0.5:
+        return out
+    g = net.gen
+    idx = list(_pickup_units(net))
+    up = imbalance_mw > 0
+    lim = {i: (float(g.at[i, "max_p_mw"]) if up else float(g.at[i, "min_p_mw"] or 0.0)) for i in idx}
+    size = {i: max(float(g.at[i, "max_p_mw"]), 0.0) for i in idx}
+    start = {i: float(g.at[i, "p_mw"]) for i in idx}
+    left = imbalance_mw
+    active = [i for i in idx if (lim[i] - start[i]) * (1 if up else -1) > 1e-6 and size[i] > 0]
+    for _ in range(20):  # water-filling: units at a limit drop out, the rest share
+        if abs(left) < 1e-3 or not active:
+            break
+        total = sum(size[i] for i in active)
+        nxt, used = [], 0.0
+        for i in active:
+            want = left * size[i] / total
+            room = lim[i] - float(g.at[i, "p_mw"])
+            step = min(want, room) if up else max(want, room)
+            g.at[i, "p_mw"] = float(g.at[i, "p_mw"]) + step
+            used += step
+            if abs(room - step) > 1e-6:
+                nxt.append(i)
+        left -= used
+        active = nxt
+    moved = sorted(((i, float(g.at[i, "p_mw"]) - start[i]) for i in idx), key=lambda kv: -abs(kv[1]))
+    names = net.bus["name"].astype(str)
+    out["shared_mw"] = round(imbalance_mw - left, 1)
+    out["slack_mw"] = round(left, 1)
+    out["n_units"] = sum(1 for _, d in moved if abs(d) > 0.05)
+    out["units"] = [
+        {"unit": str(g.at[i, "name"]), "fuel": _gen_fuel(g.at[i, "name"]),
+         "bus": names.at[int(g.at[i, "bus"])], "delta_mw": round(d, 1)}
+        for i, d in moved[:6] if abs(d) > 0.05
+    ]
+    return out
+
+
+def _apply_scenario(net, s) -> dict:
+    """Mutate a pandapower net in place with a scenario ``s`` (a ScenarioSpec or
+    WhatIfRequest). Shared by run_whatif and the whole-day simulation path so
+    both behave identically. In order:
+
+    1. take lines out of service; trip buses (drop their gens AND loads); trip
+       only the generators at buses (``trip_gens``: local load stays connected,
+       a real unit trip); scale all load;
+    2. share the resulting power imbalance across the online controllable units
+       (``share_pickup``) instead of leaving it all to the slack;
+    3. apply operator controls: redispatch (its imbalance is left to the slack,
+       since operators redispatch in up/down pairs), unit voltage set-points and
+       shunt reactive support.
+
+    Returns the pickup summary from step 2."""
+    trip_nodes = list(getattr(s, "trip_nodes", []) or [])
+    trip_gens = list(getattr(s, "trip_gens", []) or [])
+    load_scale = float(getattr(s, "load_scale", 1.0) or 1.0)
+    bus_idx_by_name = {str(r["name"]): idx for idx, r in net.bus.iterrows()}
+    on = lambda df: df["in_service"].astype(bool)  # noqa: E731
+    gen0 = float(net.gen.loc[on(net.gen), "p_mw"].sum())
+    load0 = float(net.load.loc[on(net.load), "p_mw"].sum())
+
     name_to_line_idx = {str(r["name"]): idx for idx, r in net.line.iterrows()}
-    for lid in disconnect_lines:
+    for lid in getattr(s, "disconnect_lines", []) or []:
         if lid in name_to_line_idx:
             net.line.at[name_to_line_idx[lid], "in_service"] = False
 
     if trip_nodes:
-        bus_idx_by_name = {str(r["name"]): idx for idx, r in net.bus.iterrows()}
         trip_bus_idx = {bus_idx_by_name[n] for n in trip_nodes if n in bus_idx_by_name}
-        for idx, r in net.gen.iterrows():
-            if int(r["bus"]) in trip_bus_idx:
-                net.gen.at[idx, "in_service"] = False
-        for idx, r in net.load.iterrows():
-            if int(r["bus"]) in trip_bus_idx:
-                net.load.at[idx, "in_service"] = False
+        net.gen.loc[net.gen["bus"].isin(trip_bus_idx), "in_service"] = False
+        net.load.loc[net.load["bus"].isin(trip_bus_idx), "in_service"] = False
+
+    if trip_gens:
+        gen_bus_idx = {bus_idx_by_name[n] for n in trip_gens if n in bus_idx_by_name}
+        net.gen.loc[net.gen["bus"].isin(gen_bus_idx), "in_service"] = False
 
     if load_scale != 1.0:
         net.load["p_mw"] = net.load["p_mw"] * load_scale
         net.load["q_mvar"] = net.load["q_mvar"] * load_scale
 
+    gen1 = float(net.gen.loc[on(net.gen), "p_mw"].sum())
+    load1 = float(net.load.loc[on(net.load), "p_mw"].sum())
+    pickup = share_pickup(net, (load1 - load0) - (gen1 - gen0))
+
+    for bus, delta in (getattr(s, "redispatch_mw", {}) or {}).items():
+        b = bus_idx_by_name.get(bus)
+        if b is None or not delta:
+            continue
+        units = net.gen.index[on(net.gen) & (net.gen["bus"] == b)]
+        cap = {i: max(float(net.gen.at[i, "max_p_mw"]), 0.0) for i in units}
+        total = sum(cap.values())
+        for i in units:
+            share = delta * (cap[i] / total if total > 0 else 1 / len(units))
+            p = float(net.gen.at[i, "p_mw"]) + share
+            net.gen.at[i, "p_mw"] = min(max(p, float(net.gen.at[i, "min_p_mw"] or 0.0)), cap[i])
+
+    for bus, vm in (getattr(s, "gen_vm_pu", {}) or {}).items():
+        b = bus_idx_by_name.get(bus)
+        if b is None or not vm:
+            continue
+        net.gen.loc[net.gen["bus"] == b, "vm_pu"] = float(vm)
+        net.ext_grid.loc[net.ext_grid["bus"] == b, "vm_pu"] = float(vm)
+
+    for bus, mvar in (getattr(s, "reactive_mvar", {}) or {}).items():
+        b = bus_idx_by_name.get(bus)
+        if b is None or not mvar:
+            continue
+        # pandapower's shunt q_mvar is consumption, so injection is negative.
+        pp.create_shunt(net, b, q_mvar=-float(mvar), name=f"whatif_shunt_{bus}")
+
+    return pickup
+
 
 _scenario_cache: "OrderedDict[tuple, StateFrame]" = OrderedDict()
+_pickup_cache: "OrderedDict[tuple, dict]" = OrderedDict()
 
 
 def _scenario_sig(timestamp: str, spec: ScenarioSpec) -> tuple:
@@ -861,7 +1134,11 @@ def _scenario_sig(timestamp: str, spec: ScenarioSpec) -> tuple:
         store.nearest_timestamp(timestamp),
         tuple(sorted(spec.disconnect_lines)),
         tuple(sorted(spec.trip_nodes)),
+        tuple(sorted(spec.trip_gens)),
         round(spec.load_scale, 6),
+        tuple(sorted(spec.gen_vm_pu.items())),
+        tuple(sorted(spec.reactive_mvar.items())),
+        tuple(sorted(spec.redispatch_mw.items())),
     )
 
 
@@ -874,13 +1151,22 @@ def scenario_frame(timestamp: str, spec: ScenarioSpec) -> StateFrame:
         return _scenario_cache[key]
     ts = store.nearest_timestamp(timestamp)
     net = store.read_net(ts)
-    _apply_scenario(net, spec.disconnect_lines, spec.trip_nodes, spec.load_scale)
+    _pickup_cache[key] = _apply_scenario(net, spec)
     converged = _solve(net)
     frame = extract_frame(net, ts, converged)
     _scenario_cache[key] = frame
     if len(_scenario_cache) > config.FRAME_CACHE_SIZE:
         _scenario_cache.popitem(last=False)
+        _pickup_cache.pop(next(iter(_pickup_cache)), None)
     return frame
+
+
+def scenario_pickup(timestamp: str, spec: ScenarioSpec) -> dict | None:
+    """How a scenario's power imbalance was shared (see share_pickup)."""
+    key = _scenario_sig(timestamp, spec)
+    if key not in _pickup_cache:
+        scenario_frame(timestamp, spec)
+    return _pickup_cache.get(key)
 
 
 def resolve_preset(preset: str, timestamp: str) -> ScenarioSpec:
@@ -906,8 +1192,13 @@ def resolve_preset(preset: str, timestamp: str) -> ScenarioSpec:
         bus = max(cand, key=lambda n: n.production_mw)
         return ScenarioSpec(
             preset=preset,
-            label=f"Tripped generation at {bus.label or bus.name} ({round(bus.production_mw)} MW offline)",
-            trip_nodes=[bus.id],
+            # Generators only: the bus's local load stays connected, as in a real
+            # unit trip. The MW figure is for the hour the preset was resolved at.
+            label=(
+                f"Tripped generation at {bus.label or bus.name} "
+                f"({round(bus.production_mw)} MW at {ts[11:16]})"
+            ),
+            trip_gens=[bus.id],
             resolved=[bus.id],
         )
     if preset == "load_surge":
@@ -937,7 +1228,7 @@ def run_whatif(req: WhatIfRequest) -> WhatIfResponse:
     base = base_frame(ts)
 
     net = store.read_net(ts)
-    _apply_scenario(net, req.disconnect_lines, req.trip_nodes, req.load_scale)
+    pickup = _apply_scenario(net, req)
 
     converged = _solve(net)
     scenario = extract_frame(net, ts, converged)
@@ -968,4 +1259,4 @@ def run_whatif(req: WhatIfRequest) -> WhatIfResponse:
         if a.severity == "alert" and a.element_id not in base_alert_ids
     ]
 
-    return WhatIfResponse(base=base, scenario=scenario, diffs=diffs, new_alerts=new_alerts)
+    return WhatIfResponse(base=base, scenario=scenario, diffs=diffs, new_alerts=new_alerts, pickup=pickup)

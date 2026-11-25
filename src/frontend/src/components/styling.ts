@@ -1,11 +1,38 @@
 import type { NodeType, State } from "../types";
 
+/**
+ * Line-loading bands: the one source for both the line colours and the legend.
+ * Normal stays grey, colour only where attention is needed (ISA-101 HMI). Amber
+ * to red also step down in lightness, so they read for colour-blind operators,
+ * and the agent's sea-glass highlight never collides with them.
+ */
+export const LOADING_BANDS: { from: number; to: number | null; color: string; label: string }[] = [
+  { from: 0,   to: 50,   color: "#5a6a72", label: "normal" },
+  { from: 50,  to: 80,   color: "#d9a441", label: "watch" },
+  { from: 80,  to: 100,  color: "#ee7a3b", label: "act soon" },
+  { from: 100, to: null, color: "#f0503c", label: "overloaded" },
+];
+
+/** Legend text for a band, e.g. "50 to 80%, watch". */
+export function bandLabel(b: (typeof LOADING_BANDS)[number]): string {
+  if (b.from === 0) return `Under ${b.to}%, ${b.label}`;
+  if (b.to == null) return `Over ${b.from}%, ${b.label}`;
+  return `${b.from} to ${b.to}%, ${b.label}`;
+}
+
+// Colour stops derived from the bands: a slight grey ramp inside "normal",
+// then a hard step at each band edge, so a line is exactly its band's colour.
+const STEP = 0.01;
 export const LOADING_STOPS: { pct: number; color: string }[] = [
-  { pct: 0,   color: "#2ecc71" },
-  { pct: 50,  color: "#9acd32" },
-  { pct: 75,  color: "#f5b915" },
-  { pct: 90,  color: "#ff7a45" },
-  { pct: 110, color: "#ff4d4f" },
+  { pct: 0, color: "#4a5961" },
+  ...LOADING_BANDS.flatMap((b, i) =>
+    i === 0
+      ? [{ pct: b.to as number, color: b.color }]
+      : [
+          { pct: b.from + STEP, color: b.color },
+          ...(b.to != null ? [{ pct: b.to, color: b.color }] : []),
+        ],
+  ),
 ];
 
 export const OUT_OF_SERVICE_COLOR = "#5a6677";

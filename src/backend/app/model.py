@@ -91,13 +91,29 @@ class ContingencyResult(BaseModel):
     max_loading_pct: float
     n_overloads: int
     overloaded: list[dict]  # [{id, name, loading_pct}]
+    # Only for non-converging trips: why there is no AC solution.
+    # "islanding"       -> the trip splits the network; island_* say what is cut off
+    # "voltage_collapse" -> network stays connected but the AC flow has no solution
+    failure_mode: str | None = None
+    island_buses: list[str] = []
+    island_load_mw: float | None = None
+    island_gen_mw: float | None = None
+    dc_max_loading_pct: float | None = None  # DC (linear) flow, still solvable
+    solves_at_load_pct: float | None = None  # highest system load % at which AC solves
+    # Converged trips: the most-loaded remaining line after the trip.
+    worst_line_id: str | None = None
 
 
 class WhatIfRequest(BaseModel):
     timestamp: str
     disconnect_lines: list[str] = []
     trip_nodes: list[str] = []  # bus ids whose gens/loads drop out
+    trip_gens: list[str] = []  # bus ids whose generators (only) drop out
     load_scale: float = 1.0  # global load multiplier
+    # Operator controls (bus id -> value):
+    gen_vm_pu: dict[str, float] = {}  # voltage set-point (p.u.) of the units at a bus
+    reactive_mvar: dict[str, float] = {}  # shunt support: +Mvar injects (capacitor), - absorbs (reactor)
+    redispatch_mw: dict[str, float] = {}  # change in the units' output at a bus (MW)
 
 
 class WhatIfResponse(BaseModel):
@@ -105,6 +121,8 @@ class WhatIfResponse(BaseModel):
     scenario: StateFrame
     diffs: list[dict]  # per-line loading change [{id, name, before, after, delta}]
     new_alerts: list[Alert]
+    # How the lost (or added) power was picked up; see engine.share_pickup.
+    pickup: dict | None = None
 
 
 class ScenarioSpec(BaseModel):
@@ -114,7 +132,12 @@ class ScenarioSpec(BaseModel):
     label: str = ""
     disconnect_lines: list[str] = []
     trip_nodes: list[str] = []
+    trip_gens: list[str] = []  # bus ids whose generators trip; local load stays on
     load_scale: float = 1.0
+    # Operator controls (bus id -> value):
+    gen_vm_pu: dict[str, float] = {}  # voltage set-point (p.u.) of the units at a bus
+    reactive_mvar: dict[str, float] = {}  # shunt support: +Mvar injects (capacitor), - absorbs (reactor)
+    redispatch_mw: dict[str, float] = {}  # change in the units' output at a bus (MW)
     resolved: list[str] = []  # element id(s) the preset chose
     feasible: bool = True
     reason: str = ""  # why infeasible, when feasible is False

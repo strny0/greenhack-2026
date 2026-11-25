@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { ASK_EVENT } from "@/agent/ask-context";
+import NeedsAttention from "./NeedsAttention";
 import { api } from "../api";
 import type { ContingencyResult, Meta, PresetKey, ScenarioSpec, StateFrame, WeatherPoint, WhatIfResponse } from "../types";
 import type { Selection } from "./MapView";
 import AgentChat from "./AgentChat";
-import { AgentRuntimeProvider } from "../agent/AgentRuntimeProvider";
 import type { GridRef, GridRefCtx } from "../agent/grid-refs";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -16,11 +17,22 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ChevronDownIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { buildLabelMap, formatGenTypes, labelOf, NODE_KIND_LABEL } from "@/lib/gridmeta";
 
-interface AlertRow {
+function n1FailureText(r: ContingencyResult): string {
+  if (r.failure_mode === "islanding") {
+    const n = r.island_buses?.length ?? 0;
+    return `islands ${n} bus${n === 1 ? "" : "es"} · ${Math.round(r.island_load_mw ?? 0)} MW load cut off`;
+  }
+  if (r.failure_mode === "voltage_collapse") {
+    const at = r.solves_at_load_pct != null ? `solves only at ≤${r.solves_at_load_pct}% load` : "no AC solution at any tested load";
+    return `voltage collapse — network stays connected, ${at}`;
+  }
+  return "load flow does not converge — loss of supply / collapse";
+}
+
+export interface AlertRow {
   id: string;
   kind: "line" | "node";
   sev: "alert" | "warn";
@@ -30,31 +42,10 @@ interface AlertRow {
   val: number;
 }
 
-/** Reactive media-query match (used to branch the desktop / mobile layout). */
-function useMediaQuery(query: string): boolean {
-  const [matches, setMatches] = useState(() =>
-    typeof window !== "undefined" ? window.matchMedia(query).matches : true,
-  );
-  useEffect(() => {
-    const mql = window.matchMedia(query);
-    const onChange = () => setMatches(mql.matches);
-    onChange();
-    mql.addEventListener("change", onChange);
-    return () => mql.removeEventListener("change", onChange);
-  }, [query]);
-  return matches;
-}
-
 interface Props {
   frame: StateFrame;
   meta: Meta;
-  /**
-   * The currently-viewed snapshot timestamp, derived from `meta` (the selected
-   * day + hour) so it updates the *instant* the day changes — before the heavy
-   * window data finishes loading. Drives the agent's grid-state context.
-   */
-  agentTimestamp: string;
-  selected: Selection | null;
+  selected?: Selection | null;
   onFocus: (ids: string[]) => void;
   onClearFocus: () => void;
   onSelect: (s: Selection | null) => void;
@@ -108,8 +99,8 @@ function Item({
       )}
     >
       <div className="flex items-center justify-between gap-2 font-semibold">
-        <span className="truncate">{title}</span>
-        {pill}
+        <span className="min-w-0 truncate">{title}</span>
+        {pill != null && <span className="shrink-0">{pill}</span>}
       </div>
       {desc != null && <div className="mt-0.5 text-[11px] text-muted-foreground">{desc}</div>}
     </div>
@@ -126,51 +117,16 @@ const SectionTitle = ({ children }: { children: React.ReactNode }) => (
   <div className="mb-2 mt-1 text-[11px] uppercase tracking-wide text-muted-foreground">{children}</div>
 );
 
-const MIN_WIDTH = 320;
-const MAX_WIDTH = 720;
-const DEFAULT_WIDTH = 390;
-const WIDTH_KEY = "sidebar-width";
-
-export default function Sidebar({ frame, meta, agentTimestamp, selected, onFocus, onClearFocus, onSelect, onZoom, simulation, simLoading, simError, onActivateSim, onExitSim }: Props) {
-  // On phones the panel becomes a collapsible bottom sheet under the map; on
-  // desktop it's the resizable right rail. `mobileOpen` drives the sheet height.
-  const isDesktop = useMediaQuery("(min-width: 768px)");
-  // Default to the Chat tab everywhere — it's the primary surface for the demo.
+export default function Sidebar({ frame, meta, onFocus, onClearFocus, onSelect, onZoom, simulation, simLoading, simError, onActivateSim, onExitSim }: Props) {
+  // Chat is the default and primary surface; the other tabs are the operator's
+  // own tools for when they'd rather look than ask.
   const [tab, setTab] = useState<Tab>("chat");
-  const [mobileOpen, setMobileOpen] = useState(false);
-
-  // Operator-resizable panel. Width persists across reloads; the map area is
-  // flex-1 and reflows around whatever width we land on.
-  const [width, setWidth] = useState(() => {
-    const saved = Number(localStorage.getItem(WIDTH_KEY));
-    return saved >= MIN_WIDTH && saved <= MAX_WIDTH ? saved : DEFAULT_WIDTH;
-  });
-  const dragging = useRef(false);
-
-  const onResizeStart = useCallback((e: React.PointerEvent) => {
-    e.preventDefault();
-    dragging.current = true;
-  }, []);
-
+  // Asking from elsewhere (e.g. the diagram's detail card) brings the chat back.
   useEffect(() => {
-    const onMove = (e: PointerEvent) => {
-      if (!dragging.current) return;
-      // Handle sits on the panel's left edge, so width grows as the cursor moves left.
-      const next = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, window.innerWidth - e.clientX));
-      setWidth(next);
-    };
-    const onUp = () => {
-      if (!dragging.current) return;
-      dragging.current = false;
-      localStorage.setItem(WIDTH_KEY, String(width));
-    };
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-    return () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-    };
-  }, [width]);
+    const show = () => setTab("chat");
+    window.addEventListener(ASK_EVENT, show);
+    return () => window.removeEventListener(ASK_EVENT, show);
+  }, []);
 
   // client-side alerts (stay in sync with scrubber, no extra fetch)
   const alerts = useMemo(() => {
@@ -234,145 +190,101 @@ export default function Sidebar({ frame, meta, agentTimestamp, selected, onFocus
   );
 
   const TABS: [Tab, string, number][] = [
+    ["chat", "Ask", 0],
     ["alerts", "Alerts", nAlerts],
     ["n1", "N-1", 0],
     ["whatif", "What-if", 0],
     ["weather", "Weather", 0],
-    ["chat", "Chat", 0],
   ];
 
   return (
-    // The runtime provider is mounted once, above the tab body, so the agent
-    // conversation persists when the operator switches tabs.
-    <AgentRuntimeProvider timestamp={agentTimestamp || frame.timestamp} selection={selected} simulation={simulation?.spec ?? null}>
-      <aside
-        className={cn(
-          "relative flex flex-col bg-card",
-          isDesktop
-            ? "h-full shrink-0 border-l"
-            : "w-full shrink-0 border-t",
-        )}
-        style={
-          isDesktop
-            ? { width }
-            : { height: mobileOpen ? "60dvh" : undefined }
-        }
+    <section aria-label="Agent and tools" className="flex min-h-0 min-w-0 flex-1 flex-col bg-card">
+      <Tabs
+        value={tab}
+        onValueChange={(v) => {
+          setTab(v as Tab);
+          onClearFocus();
+        }}
+        className="flex min-h-0 flex-1 flex-col gap-0"
       >
-        {/* Desktop: drag handle on the left edge to resize the panel. */}
-        {isDesktop && (
-          <div
-            onPointerDown={onResizeStart}
-            className="absolute -left-1 top-0 z-10 h-full w-2 cursor-col-resize select-none transition-colors hover:bg-primary/30"
-            title="Drag to resize"
-          />
-        )}
-
-        {/* Mobile: grab bar that expands/collapses the bottom sheet. */}
-        {!isDesktop && (
-          <button
-            type="button"
-            onClick={() => setMobileOpen((o) => !o)}
-            aria-expanded={mobileOpen}
-            aria-label={mobileOpen ? "Collapse panel" : "Expand panel"}
-            className="flex w-full items-center justify-center border-b py-1.5 text-muted-foreground active:bg-accent"
-          >
-            <ChevronDownIcon
-              className={cn(
-                "size-4 transition-transform",
-                !mobileOpen && "rotate-180",
+        <TabsList className="h-auto w-full justify-start gap-1 rounded-none border-b bg-transparent px-3 py-0">
+          {TABS.map(([t, label, badge]) => (
+            <TabsTrigger
+              key={t}
+              value={t}
+              className="h-11 flex-none rounded-none border-0 border-b-2 border-transparent px-3 text-[15px] text-muted-foreground data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none"
+            >
+              {label}
+              {badge > 0 && (
+                <span className="num ml-1.5 inline-flex min-w-5 items-center justify-center rounded-full bg-destructive px-1 text-[12px] text-[#172229]">
+                  {badge}
+                </span>
               )}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+
+        <div className="flex min-h-0 flex-1 flex-col">
+          <TabsContent value="chat" className="m-0 flex min-h-0 flex-1 flex-col">
+            <NeedsAttention
+              alerts={alerts}
+              simulating={!!simulation}
+              onFocus={onFocus}
+              onMore={() => setTab("alerts")}
             />
-          </button>
-        )}
+            <div className="min-h-0 flex-1">
+              <AgentChat grid={grid} onHighlight={onFocus} />
+            </div>
+          </TabsContent>
 
-        <Tabs
-          value={tab}
-          onValueChange={(v) => {
-            setTab(v as Tab);
-            onClearFocus();
-            // tapping a tab on mobile also opens the sheet
-            if (!isDesktop) setMobileOpen(true);
-          }}
-          className="flex min-h-0 flex-1 flex-col gap-0"
-        >
-          <TabsList className="h-auto w-full justify-stretch gap-0 rounded-none border-b bg-transparent p-0">
-            {TABS.map(([t, label, badge]) => (
-              <TabsTrigger
-                key={t}
-                value={t}
-                className="flex-1 rounded-none border-0 border-b-2 border-transparent py-2.5 text-xs text-muted-foreground data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none"
-              >
-                {label}
-                {badge > 0 && (
-                  <span className="ml-1 inline-flex min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] text-white">
-                    {badge}
-                  </span>
-                )}
-              </TabsTrigger>
-            ))}
-          </TabsList>
+          <TabsContent value="alerts" className="m-0 min-h-0 flex-1">
+            <ScrollArea className="h-full">
+              <div className="mx-auto max-w-3xl p-4">
+                <AlertsTab
+                  alerts={alerts}
+                  onPick={(id, kind) => { onFocus([id]); onSelect({ kind, id }); }}
+                  onZoom={(id, kind) => { onFocus([id]); onSelect({ kind, id }); onZoom(kind, id); }}
+                />
+              </div>
+            </ScrollArea>
+          </TabsContent>
 
-          {/* On mobile the tab body is hidden until the sheet is expanded, so a
-              collapsed panel is just the grab bar + tab strip under the map. */}
-          <div
-            className={cn(
-              "flex min-h-0 flex-1 flex-col",
-              !isDesktop && !mobileOpen && "hidden",
-            )}
-          >
-            <TabsContent value="alerts" className="m-0 min-h-0 flex-1">
-              <ScrollArea className="h-full">
-                <div className="p-3">
-                  <AlertsTab
-                    alerts={alerts}
-                    onPick={(id, kind) => { onFocus([id]); onSelect({ kind, id }); }}
-                    onZoom={(id, kind) => { onFocus([id]); onSelect({ kind, id }); onZoom(kind, id); }}
-                  />
-                </div>
-              </ScrollArea>
-            </TabsContent>
+          <TabsContent value="n1" className="m-0 min-h-0 flex-1">
+            <ScrollArea className="h-full">
+              <div className="mx-auto max-w-3xl p-4">
+                <N1Tab ts={frame.timestamp} labels={labels} onFocus={onFocus} onSelect={onSelect} />
+              </div>
+            </ScrollArea>
+          </TabsContent>
 
-            <TabsContent value="n1" className="m-0 min-h-0 flex-1">
-              <ScrollArea className="h-full">
-                <div className="p-3">
-                  <N1Tab ts={frame.timestamp} labels={labels} onFocus={onFocus} onSelect={onSelect} />
-                </div>
-              </ScrollArea>
-            </TabsContent>
+          <TabsContent value="whatif" className="m-0 min-h-0 flex-1">
+            <ScrollArea className="h-full">
+              <div className="mx-auto max-w-3xl p-4">
+                <WhatIfTab
+                  frame={frame}
+                  labels={labels}
+                  onFocus={onFocus}
+                  onSelect={onSelect}
+                  simulation={simulation}
+                  simLoading={simLoading}
+                  simError={simError}
+                  onActivateSim={onActivateSim}
+                  onExitSim={onExitSim}
+                />
+              </div>
+            </ScrollArea>
+          </TabsContent>
 
-            <TabsContent value="whatif" className="m-0 min-h-0 flex-1">
-              <ScrollArea className="h-full">
-                <div className="p-3">
-                  <WhatIfTab
-                    frame={frame}
-                    labels={labels}
-                    onFocus={onFocus}
-                    onSelect={onSelect}
-                    simulation={simulation}
-                    simLoading={simLoading}
-                    simError={simError}
-                    onActivateSim={onActivateSim}
-                    onExitSim={onExitSim}
-                  />
-                </div>
-              </ScrollArea>
-            </TabsContent>
-
-            <TabsContent value="weather" className="m-0 min-h-0 flex-1">
-              <ScrollArea className="h-full">
-                <div className="p-3">
-                  <WeatherTab />
-                </div>
-              </ScrollArea>
-            </TabsContent>
-
-            <TabsContent value="chat" className="m-0 min-h-0 flex-1">
-              <AgentChat grid={grid} />
-            </TabsContent>
-          </div>
-        </Tabs>
-      </aside>
-    </AgentRuntimeProvider>
+          <TabsContent value="weather" className="m-0 min-h-0 flex-1">
+            <ScrollArea className="h-full">
+              <div className="mx-auto max-w-3xl p-4">
+                <WeatherTab />
+              </div>
+            </ScrollArea>
+          </TabsContent>
+        </div>
+      </Tabs>
+    </section>
   );
 }
 
@@ -427,8 +339,8 @@ function N1Tab({ ts, labels, onFocus, onSelect }: { ts: string; labels: Record<s
   return (
     <>
       <Note>
-        Deterministic N-1 security analysis: trip each line, re-solve the load flow, and rank by worst
-        resulting stress. Non-converging trips = islanding / voltage collapse (most critical).
+        Deterministic N-1 security analysis: trip each line, re-solve the load flow, and rank by the
+        busiest remaining line. Non-converging trips = islanding / voltage collapse (most critical).
       </Note>
       <Button className="mb-2.5 w-full" onClick={run} disabled={loading}>
         {loading ? "Running load flows…" : "Run N-1 analysis"}
@@ -438,7 +350,7 @@ function N1Tab({ ts, labels, onFocus, onSelect }: { ts: string; labels: Record<s
           <Item
             key={r.contingency_id}
             onClick={() => {
-              onFocus([r.contingency_id, ...r.overloaded.map((o) => o.id)]);
+              onFocus([r.contingency_id, ...r.overloaded.map((o) => o.id), ...(r.worst_line_id ? [r.worst_line_id] : [])]);
               onSelect({ kind: "line", id: r.contingency_id });
             }}
             title={`trip ${labels[r.contingency_id] ?? r.contingency_name}`}
@@ -448,15 +360,17 @@ function N1Tab({ ts, labels, onFocus, onSelect }: { ts: string; labels: Record<s
                   {r.max_loading_pct}%
                 </Pill>
               ) : (
-                <Pill tone="crit">islanding</Pill>
+                <Pill tone="crit">{r.failure_mode === "voltage_collapse" ? "collapse" : "islanding"}</Pill>
               )
             }
             desc={
               r.converged
                 ? r.n_overloads > 0
                   ? `${r.n_overloads} overloaded: ${r.overloaded.slice(0, 2).map((o) => `${labels[o.id] ?? o.name} ${o.loading_pct}%`).join(", ")}`
-                  : "no overloads — grid survives this contingency"
-                : "load flow does not converge — loss of supply / collapse"
+                  : r.worst_line_id
+                    ? `no overloads · busiest after: ${labels[r.worst_line_id] ?? r.worst_line_id}`
+                    : "no overloads — grid survives this contingency"
+                : n1FailureText(r)
             }
           />
         ))}
@@ -471,6 +385,84 @@ const SIM_PRESETS: { key: PresetKey; label: string }[] = [
   { key: "trip_largest_generator", label: "Trip largest generator" },
   { key: "load_surge", label: "Load surge (+50% demand)" },
 ];
+
+type ActionKind = "trip_line" | "trip_gen" | "redispatch" | "set_voltage" | "add_reactive";
+
+interface WhatIfAction {
+  kind: ActionKind;
+  target: string;
+  value?: number;
+  text: string;
+}
+
+const signed = (v: number) => `${v > 0 ? "+" : "−"}${Math.abs(v)}`;
+
+const ACTION_KINDS: Record<
+  ActionKind,
+  {
+    label: string;
+    targets: "line" | "plant" | "bus";
+    targetLabel: string;
+    unit?: string;
+    valueLabel?: string;
+    hint?: string;
+    step?: number;
+    range?: [number, number];
+    defaultValue: string;
+    describe: (name: string, v?: number) => string;
+  }
+> = {
+  trip_line: {
+    label: "Disconnect a line",
+    targets: "line",
+    targetLabel: "Line",
+    defaultValue: "",
+    describe: (n) => `Disconnect ${n}`,
+  },
+  trip_gen: {
+    label: "Trip a generator",
+    targets: "plant",
+    targetLabel: "Plant (all its units trip, local load stays on)",
+    defaultValue: "",
+    describe: (n) => `Trip generation at ${n}`,
+  },
+  redispatch: {
+    label: "Redispatch a plant",
+    targets: "plant",
+    targetLabel: "Plant",
+    unit: "MW",
+    valueLabel: "Change in output",
+    hint: "+ raises, − lowers",
+    step: 10,
+    range: [-5000, 5000],
+    defaultValue: "-100",
+    describe: (n, v = 0) => `Redispatch ${n} ${signed(v)} MW`,
+  },
+  set_voltage: {
+    label: "Change a voltage set-point",
+    targets: "plant",
+    targetLabel: "Plant (its generators' AVR set-point)",
+    unit: "p.u.",
+    valueLabel: "New set-point",
+    hint: "0.90 – 1.20",
+    step: 0.01,
+    range: [0.9, 1.2],
+    defaultValue: "1.05",
+    describe: (n, v = 0) => `Voltage set-point at ${n} → ${v.toFixed(2)} p.u.`,
+  },
+  add_reactive: {
+    label: "Add reactive support",
+    targets: "bus",
+    targetLabel: "Bus",
+    unit: "Mvar",
+    valueLabel: "Shunt size",
+    hint: "+ capacitor, − reactor",
+    step: 10,
+    range: [-1000, 1000],
+    defaultValue: "-50",
+    describe: (n, v = 0) => `${v > 0 ? "Capacitor" : "Reactor"} at ${n} ${signed(v)} Mvar`,
+  },
+};
 
 function WhatIfTab({
   frame,
@@ -493,24 +485,61 @@ function WhatIfTab({
   onActivateSim: (preset: PresetKey) => void;
   onExitSim: () => void;
 }) {
-  const [disc, setDisc] = useState<string>(NONE);
+  const [kind, setKind] = useState<ActionKind>("trip_line");
+  const [target, setTarget] = useState<string>(NONE);
+  const [value, setValue] = useState<string>(ACTION_KINDS.trip_line.defaultValue);
+  const [actions, setActions] = useState<WhatIfAction[]>([]);
   const [scale, setScale] = useState(1.0);
   const [res, setRes] = useState<WhatIfResponse | null>(null);
   const [loading, setLoading] = useState(false);
 
   const lines = useMemo(() => [...frame.lines].sort((a, b) => (b.loading_pct ?? 0) - (a.loading_pct ?? 0)), [frame]);
+  const plants = useMemo(
+    () => frame.nodes.filter((n) => n.production_mw > 0).sort((a, b) => b.production_mw - a.production_mw),
+    [frame],
+  );
+  const buses = useMemo(() => [...frame.nodes].sort((a, b) => labelOf(a).localeCompare(labelOf(b))), [frame]);
+  const spec = ACTION_KINDS[kind];
+  const options =
+    spec.targets === "line"
+      ? lines.map((l) => ({ id: l.id, text: `${labelOf(l)} (${l.loading_pct ?? 0}%)` }))
+      : spec.targets === "plant"
+        ? plants.map((n) => ({ id: n.id, text: `${labelOf(n)} (${Math.round(n.production_mw)} MW, ${n.vm_pu?.toFixed(2) ?? "–"} p.u.)` }))
+        : buses.map((n) => ({ id: n.id, text: `${labelOf(n)} (${n.vm_pu?.toFixed(2) ?? "–"} p.u.)` }));
+  const num = Number(value);
+  const valueOk = !spec.unit || (Number.isFinite(num) && num !== 0 && (!spec.range || (num >= spec.range[0] && num <= spec.range[1])));
+  const canAdd = target !== NONE && valueOk;
+
+  const pickKind = (k: ActionKind) => {
+    setKind(k);
+    setTarget(NONE);
+    setValue(ACTION_KINDS[k].defaultValue);
+  };
+
+  const add = () => {
+    if (!canAdd) return;
+    const name = labels[target] ?? target;
+    const v = spec.unit ? num : undefined;
+    setActions((xs) => [...xs.filter((x) => !(x.kind === kind && x.target === target)), { kind, target, value: v, text: spec.describe(name, v) }]);
+    setTarget(NONE);
+  };
 
   const run = async () => {
     setLoading(true);
     try {
-      const lineId = disc === NONE ? "" : disc;
+      const pick = (k: ActionKind) => actions.filter((x) => x.kind === k);
+      const byBus = (k: ActionKind) => Object.fromEntries(pick(k).map((x) => [x.target, x.value ?? 0]));
       const r = await api.whatif({
         timestamp: frame.timestamp,
-        disconnect_lines: lineId ? [lineId] : [],
+        disconnect_lines: pick("trip_line").map((x) => x.target),
+        trip_gens: pick("trip_gen").map((x) => x.target),
+        redispatch_mw: byBus("redispatch"),
+        gen_vm_pu: byBus("set_voltage"),
+        reactive_mvar: byBus("add_reactive"),
         load_scale: scale,
       });
       setRes(r);
-      const ids = [lineId, ...r.diffs.slice(0, 8).map((d) => d.id)].filter(Boolean);
+      const ids = [...pick("trip_line").map((x) => x.target), ...r.diffs.slice(0, 8).map((d) => d.id)];
       onFocus(ids);
     } finally {
       setLoading(false);
@@ -558,23 +587,82 @@ function WhatIfTab({
         )}
       </div>
 
-      <Note>Apply operator actions and re-run a real load flow. The map highlights what moves.</Note>
-      <div className="mb-2.5">
-        <label className="mb-1 block text-[11px] text-muted-foreground">Disconnect a line</label>
-        <Select value={disc} onValueChange={setDisc}>
-          <SelectTrigger className="w-full">
-            <SelectValue placeholder="— none —" />
+      <Note>
+        Stack operator actions and re-run a real load flow. Lost generation is picked up by every online
+        dispatchable unit in proportion to its size, as governors would. The map highlights what moves.
+      </Note>
+      <div className="mb-2.5 rounded-lg border bg-background p-2.5">
+        <label className="mb-1 block text-[11px] text-muted-foreground">Action</label>
+        <Select value={kind} onValueChange={(v) => pickKind(v as ActionKind)}>
+          <SelectTrigger className="mb-2 w-full">
+            <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value={NONE}>— none —</SelectItem>
-            {lines.map((l) => (
-              <SelectItem key={l.id} value={l.id}>
-                {labelOf(l)} ({l.loading_pct ?? 0}%)
+            {(Object.keys(ACTION_KINDS) as ActionKind[]).map((k) => (
+              <SelectItem key={k} value={k}>
+                {ACTION_KINDS[k].label}
               </SelectItem>
             ))}
           </SelectContent>
         </Select>
+        <label className="mb-1 block text-[11px] text-muted-foreground">{spec.targetLabel}</label>
+        <Select value={target} onValueChange={setTarget}>
+          <SelectTrigger className="mb-2 w-full">
+            <SelectValue placeholder="— choose —" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={NONE}>— choose —</SelectItem>
+            {options.map((o) => (
+              <SelectItem key={o.id} value={o.id}>
+                {o.text}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {spec.unit && (
+          <>
+            <label className="mb-1 flex items-center justify-between text-[11px] text-muted-foreground">
+              <span>{spec.valueLabel}</span>
+              <span>{spec.hint}</span>
+            </label>
+            <div className="mb-2 flex items-center gap-2">
+              <input
+                type="number"
+                inputMode="decimal"
+                step={spec.step}
+                value={value}
+                onChange={(e) => setValue(e.target.value)}
+                aria-label={spec.valueLabel}
+                className={cn(
+                  "h-9 w-full rounded-md border bg-background px-2 text-[13px] tabular-nums outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  !valueOk && "border-red-500",
+                )}
+              />
+              <span className="w-10 shrink-0 text-[12px] text-muted-foreground">{spec.unit}</span>
+            </div>
+          </>
+        )}
+        <Button variant="outline" className="w-full" onClick={add} disabled={!canAdd}>
+          Add action
+        </Button>
       </div>
+      {actions.length > 0 && (
+        <div className="mb-2.5 flex flex-col gap-1">
+          {actions.map((x) => (
+            <div key={`${x.kind}:${x.target}`} className="flex items-center gap-2 rounded-md border bg-background px-2 py-1.5 text-[12px]">
+              <span className="min-w-0 flex-1 truncate" title={x.text}>{x.text}</span>
+              <button
+                type="button"
+                aria-label={`Remove: ${x.text}`}
+                onClick={() => setActions((xs) => xs.filter((y) => y !== x))}
+                className="shrink-0 rounded px-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="mb-2.5">
         <label className="mb-1 flex items-center justify-between text-[11px] text-muted-foreground">
           <span>Load multiplier</span>
@@ -582,7 +670,7 @@ function WhatIfTab({
         </label>
         <Slider min={0.8} max={1.6} step={0.05} value={[scale]} onValueChange={(v) => setScale(v[0])} />
       </div>
-      <Button className="mb-2.5 w-full" onClick={run} disabled={loading}>
+      <Button className="mb-2.5 w-full" onClick={run} disabled={loading || (actions.length === 0 && scale === 1)}>
         {loading ? "Solving…" : "Run scenario"}
       </Button>
       {res && (
@@ -602,6 +690,24 @@ function WhatIfTab({
               </>
             }
           />
+          {res.pickup && Math.abs(res.pickup.imbalance_mw) >= 1 && (
+            <Item
+              title={res.pickup.imbalance_mw > 0 ? "Who picked up the lost power" : "Who backed down"}
+              pill={<Pill tone="ok">{Math.round(Math.abs(res.pickup.imbalance_mw)).toLocaleString()} MW</Pill>}
+              desc={
+                <>
+                  {Math.round(Math.abs(res.pickup.shared_mw)).toLocaleString()} MW shared by {res.pickup.n_units ?? res.pickup.units.length} units
+                  {Math.abs(res.pickup.slack_mw) >= 1 && <>, {Math.round(Math.abs(res.pickup.slack_mw)).toLocaleString()} MW left to the slack</>}
+                  {res.pickup.units.length > 0 && (
+                    <>
+                      {" "}· most at{" "}
+                      {[...new Set(res.pickup.units.map((u) => u.bus))].slice(0, 3).map((b) => labels[b] ?? b).join(", ")}
+                    </>
+                  )}
+                </>
+              }
+            />
+          )}
           <SectionTitle>Biggest loading changes</SectionTitle>
           {res.diffs.slice(0, 10).map((d) => (
             <Item

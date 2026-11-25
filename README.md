@@ -29,9 +29,11 @@ right now, what does it mean, and what is about to break. This submission is the
   rated band.
 - **Time scrubber / "pulse"**: play through the hourly window. The map and KPIs
   animate as the state evolves.
-- **What-if scenarios**: disconnect a line or scale load, re-solve, and see
-  which branches move (and which overload) against the base case. Simulate a
-  dire disaster.
+- **What-if scenarios**: disconnect a line, trip a generator, redispatch a
+  plant, change a voltage set-point, add reactive support or scale load,
+  re-solve, and see which branches move (and which overload) against the base
+  case. Lost generation is picked up by every online dispatchable unit in
+  proportion to its size, not by the slack alone. Simulate a dire disaster.
 - **N-1 security analysis**: trip each line, re-solve, and rank the worst
   contingencies. Non-converging trips are flagged as islanding or voltage
   collapse.
@@ -208,7 +210,8 @@ All endpoints are under `/api` (backend on `:8099`).
 | `GET /api/alerts?timestamp=…` | threshold alerts (loading + voltage) |
 | `GET /api/timeseries?…` | one element's metric across a window |
 | `GET /api/n1?timestamp=…` | N-1 contingency ranking |
-| `POST /api/whatif` | disconnect lines / scale load, diff vs base |
+| `POST /api/whatif` | disconnect lines, trip generators, redispatch, voltage set-points, reactive support, scale load; diff vs base |
+| `GET /api/reserves?timestamp=…` | spinning reserve, largest unit / plant, margin after losing them |
 | `GET /api/weather` | cloud cover / wind + solar-drop heuristic |
 | `POST /api/agent/stream` | tool-calling dispatcher agent (NDJSON stream) |
 

@@ -58,3 +58,20 @@ def test_sandbox_cwd_is_isolated_empty_dir():
     out = sandbox.run_user_code("import os; result = sorted(os.listdir('.'))", _ts())
     assert out["ok"] is True
     assert out["result"] == []
+
+
+def test_unsupported_rlimit_is_tolerated(monkeypatch):
+    """macOS rejects RLIMIT_AS; that must not abort every sandbox start."""
+    import resource
+
+    def refuse(which, limits):
+        raise ValueError("not supported")
+
+    monkeypatch.setattr(resource, "setrlimit", refuse)
+    sandbox._try_setrlimit(resource.RLIMIT_AS, 1024)  # must not raise
+
+
+def test_sandbox_runs_real_code():
+    out = sandbox.run_user_code("result = 1 + 1", _ts())
+    assert out["ok"] is True, out
+    assert out["result"] == 2

@@ -80,6 +80,14 @@ export interface ContingencyResult {
   max_loading_pct: number;
   n_overloads: number;
   overloaded: { id: string; name: string; loading_pct: number }[];
+  failure_mode?: "islanding" | "voltage_collapse" | null;
+  island_buses?: string[];
+  island_load_mw?: number | null;
+  island_gen_mw?: number | null;
+  dc_max_loading_pct?: number | null;
+  solves_at_load_pct?: number | null;
+  /** Converged trips: the most-loaded remaining line. */
+  worst_line_id?: string | null;
 }
 
 export interface WhatIfResponse {
@@ -87,6 +95,17 @@ export interface WhatIfResponse {
   scenario: StateFrame;
   diffs: { id: string; name: string; before: number; after: number; delta: number }[];
   new_alerts: Alert[];
+  pickup?: Pickup | null;
+}
+
+/** How a power imbalance (lost generation, extra load) was picked up: shared by
+ * the online dispatchable units in proportion to size, the rest by the slack. */
+export interface Pickup {
+  imbalance_mw: number;
+  shared_mw: number;
+  slack_mw: number;
+  n_units?: number;
+  units: { unit: string; bus: string; delta_mw: number }[];
 }
 
 export type PresetKey =
@@ -100,6 +119,7 @@ export interface ScenarioSpec {
   label: string;
   disconnect_lines: string[];
   trip_nodes: string[];
+  trip_gens?: string[];
   load_scale: number;
   resolved: string[];
   feasible: boolean;

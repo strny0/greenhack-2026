@@ -163,9 +163,43 @@ export function rehypeGridRefs(refs: GridRef[] = []) {
         next.push(child);
       }
     }
-    node.children = next;
+    node.children = dedupeAdjacent(next);
   };
   return (tree: HNode) => walk(tree, false);
+}
+
+const anchorId = (n: HNode | undefined) =>
+  n?.type === "element" && n.tagName === "a" ? (n.properties?.title as string | undefined) : undefined;
+
+/**
+ * Drop a chip that only repeats the chip right before it: the model often
+ * writes "Name (id)" or "Name, id", which would render as two identical chips
+ * side by side. The brackets around the repeat go with it.
+ */
+export function dedupeAdjacent(nodes: HNode[]): HNode[] {
+  const out: HNode[] = [];
+  for (let i = 0; i < nodes.length; i++) {
+    const n = nodes[i];
+    const id = anchorId(n);
+    const gap = out[out.length - 1];
+    const prev = out[out.length - 2];
+    if (
+      id &&
+      gap?.type === "text" &&
+      /^\s*[(\[,]?\s*$/.test(gap.value ?? "") &&
+      anchorId(prev) === id
+    ) {
+      const opened = /[(\[]/.test(gap.value ?? "");
+      out.pop(); // the " (" between the two chips
+      const after = nodes[i + 1];
+      if (opened && after?.type === "text" && /^\s*[)\]]/.test(after.value ?? "")) {
+        nodes[i + 1] = { ...after, value: (after.value ?? "").replace(/^\s*[)\]]/, "") };
+      }
+      continue;
+    }
+    out.push(n);
+  }
+  return out;
 }
 
 function GridChip({ kind, id, children }: { kind: GridKind; id: string; children?: ReactNode }) {
@@ -182,7 +216,7 @@ function GridChip({ kind, id, children }: { kind: GridKind; id: string; children
       className={cn(
         "mx-px inline-flex items-center gap-1 rounded border pr-0.5 pl-1.5 align-baseline text-[0.82em] transition-colors",
         display === id ? "font-mono" : "font-medium",
-        "border-border bg-muted/60 text-foreground hover:border-ring hover:bg-accent",
+        "border-agent-border bg-agent-surface text-foreground hover:border-ring",
       )}
     >
       <button
@@ -194,7 +228,7 @@ function GridChip({ kind, id, children }: { kind: GridKind; id: string; children
         <span
           className={cn(
             "inline-block size-1.5 shrink-0 rounded-full",
-            kind === "node" ? "bg-sky-400" : "bg-emerald-400",
+            kind === "node" ? "bg-[#afc0c8]" : "bg-primary",
           )}
         />
         {display}
@@ -210,6 +244,29 @@ function GridChip({ kind, id, children }: { kind: GridKind; id: string; children
       </button>
     </span>
   );
+}
+
+/**
+ * Every grid element an answer mentions, in order of first mention, using the
+ * same matching as the chips (ids and display labels, longest label wins). Lets
+ * the diagram follow the conversation: what the agent talks about lights up.
+ */
+export function findGridRefs(text: string, refs: GridRef[]): { kind: GridKind; id: string }[] {
+  const matcher = buildMatcher(refs);
+  const seen = new Set<string>();
+  const out: { kind: GridKind; id: string }[] = [];
+  for (const n of splitText(text, matcher)) {
+    if (n.type !== "element") continue;
+    const t = String(n.properties?.title ?? "");
+    const sep = t.indexOf(":");
+    const kind = t.slice(0, sep) as GridKind;
+    const id = t.slice(sep + 1);
+    if (!seen.has(id)) {
+      seen.add(id);
+      out.push({ kind, id });
+    }
+  }
+  return out;
 }
 
 /** Drop-in markdown <a> renderer: grid refs become chips, everything else a link. */

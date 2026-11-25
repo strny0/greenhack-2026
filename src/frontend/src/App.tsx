@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import type { Meta, PresetKey, ScenarioSpec, StateFrame } from "./types";
 import MapView, { Selection } from "./components/MapView";
@@ -8,6 +8,11 @@ import Legend from "./components/Legend";
 import DetailPanel from "./components/DetailPanel";
 import Sidebar from "./components/Sidebar";
 import SimulationBadge from "./components/SimulationBadge";
+import ComingHours from "./components/ComingHours";
+import { AgentRuntimeProvider } from "./agent/AgentRuntimeProvider";
+import { AskContextCtx, type AskContext } from "./agent/ask-context";
+import { labelOf } from "./lib/gridmeta";
+import { cn } from "./lib/utils";
 import {
   clampWindowStart,
   datasetDayBounds,
@@ -18,6 +23,41 @@ import {
 
 const DAY_FRAMES = 24; // one calendar day per loaded window
 
+// The diagram pane shares the screen with the chat. Operator-resizable; the
+// chat takes the rest. Width persists across reloads.
+const DIAGRAM_MIN = 360;
+// The diagram gets 60% of the width by default; the chat keeps at least 420px.
+// Stored as a fraction so the split holds across screen sizes.
+const DIAGRAM_DEFAULT_FRAC = 0.6;
+const CHAT_MIN = 420;
+const DIAGRAM_KEY = "diagram-frac";
+
+const hourLabel = (ts: string) =>
+  ts
+    ? new Date(ts).toLocaleString("en-GB", {
+        weekday: "short",
+        day: "numeric",
+        month: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    : "";
+
+/** Reactive media-query match (desktop side-by-side vs stacked on phones). */
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(() =>
+    typeof window !== "undefined" ? window.matchMedia(query).matches : true,
+  );
+  useEffect(() => {
+    const mql = window.matchMedia(query);
+    const onChange = () => setMatches(mql.matches);
+    onChange();
+    mql.addEventListener("change", onChange);
+    return () => mql.removeEventListener("change", onChange);
+  }, [query]);
+  return matches;
+}
+
 export default function App() {
   const [meta, setMeta] = useState<Meta | null>(null);
   const [frames, setFrames] = useState<StateFrame[]>([]);
@@ -26,6 +66,7 @@ export default function App() {
   const [windowLoading, setWindowLoading] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [selected, setSelected] = useState<Selection | null>(null);
+  const [detailFolded, setDetailFolded] = useState(false);
   const [highlight, setHighlight] = useState<Set<string>>(new Set());
   // A "fly the camera here" request. The nonce makes repeated jumps to the same
   // element re-trigger the view's effect (a new object identity each time).
@@ -43,6 +84,44 @@ export default function App() {
   const [simLoading, setSimLoading] = useState(false);
   const [simError, setSimError] = useState<string | null>(null);
   const timer = useRef<number | null>(null);
+  const isDesktop = useMediaQuery("(min-width: 900px)");
+  const [diagramFrac, setDiagramFrac] = useState(() => {
+    try {
+      const saved = Number(localStorage.getItem(DIAGRAM_KEY));
+      return saved > 0.15 && saved < 0.9 ? saved : DIAGRAM_DEFAULT_FRAC;
+    } catch {
+      return DIAGRAM_DEFAULT_FRAC;
+    }
+  });
+  const resizing = useRef(false);
+  const onResizeStart = useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    resizing.current = true;
+  }, []);
+  useEffect(() => {
+    const onMove = (e: PointerEvent) => {
+      if (!resizing.current) return;
+      // Handle sits on the pane's left edge; keep at least CHAT_MIN for the chat.
+      const vw = window.innerWidth;
+      const px = Math.min(vw - CHAT_MIN, Math.max(DIAGRAM_MIN, vw - e.clientX));
+      setDiagramFrac(px / vw);
+    };
+    const onUp = () => {
+      if (!resizing.current) return;
+      resizing.current = false;
+      try {
+        localStorage.setItem(DIAGRAM_KEY, String(diagramFrac));
+      } catch {
+        /* storage unavailable: the split just isn't remembered */
+      }
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, [diagramFrac]);
   // The first window load shows the full-screen progress bar and jumps to the
   // evening peak; later loads (a date change) keep the old frames on screen.
   const initialLoad = useRef(true);
@@ -283,94 +362,175 @@ export default function App() {
       </div>
     );
 
-  return (
-    <div className="flex h-[100dvh] flex-col bg-background text-foreground">
-      <TopBar
-        frame={frame}
+  const selectedEl = selectedNode ?? selectedLine;
+  const askContext: AskContext = {
+    hourLabel: hourLabel(currentTs || frame.timestamp),
+    selectionLabel: selectedEl ? labelOf(selectedEl) : null,
+    simulationLabel: simulation ? simulation.spec.label : null,
+    clearSelection: () => setSelected(null),
+  };
+
+  const diagram = (
+    <section
+      aria-label="Grid diagram"
+      className={cn(
+        "relative flex min-h-0 flex-col border-border bg-background",
+        isDesktop ? "h-full shrink-0 border-l" : "h-[44dvh] shrink-0 border-b",
+      )}
+      style={
+        isDesktop
+          ? { width: `${diagramFrac * 100}%`, minWidth: DIAGRAM_MIN, maxWidth: `calc(100% - ${CHAT_MIN}px)` }
+          : undefined
+      }
+    >
+      {isDesktop && (
+        <div
+          onPointerDown={onResizeStart}
+          className="absolute -left-1 top-0 z-30 h-full w-2 cursor-col-resize select-none transition-colors hover:bg-primary/30"
+          title="Drag to resize"
+        />
+      )}
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-2">
+        <div
+          role="tablist"
+          aria-label="Diagram view"
+          className="inline-flex rounded-[10px] border bg-card p-[3px]"
+        >
+          {([
+            ["map", "Map"],
+            ["sld", "Schematic"],
+          ] as const).map(([m, label]) => (
+            <button
+              key={m}
+              type="button"
+              role="tab"
+              aria-selected={mode === m}
+              onClick={() => setMode(m)}
+              className={cn(
+                "h-8 rounded-[7px] px-3 text-sm font-medium transition-colors",
+                mode === m ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <span className="text-[13px] text-muted-foreground">
+          Click a line or substation to ask about it
+        </span>
+      </div>
+      <div className={cn("relative min-h-0 flex-1", simulation && "sim-frame")}>
+        {mode === "map" ? (
+          <MapView
+            frame={frame}
+            meta={meta}
+            highlight={highlight}
+            selected={selected}
+            onSelect={setSelected}
+            zoomTo={zoomTo}
+            baseFrame={baseFrame}
+            simulating={!!simulation}
+          />
+        ) : (
+          <SldView
+            frame={frame}
+            meta={meta}
+            highlight={highlight}
+            selected={selected}
+            onSelect={setSelected}
+            zoomTo={zoomTo}
+            baseFrame={baseFrame}
+            simulating={!!simulation}
+          />
+        )}
+        <Legend showBusIcons={mode === "map"} />
+      </div>
+      {(selectedNode || selectedLine) && (
+        <DetailPanel
+          node={selectedNode}
+          line={selectedLine}
+          baseNode={baseNode}
+          baseLine={baseLine}
+          windowStartTs={windowStartTs}
+          windowCount={renderFrames.length}
+          onClose={() => setSelected(null)}
+          onGoTo={zoom}
+          onFoldChange={setDetailFolded}
+        />
+      )}
+      {/* An open detail card takes Coming hours' place, so the schematic keeps
+          most of the height; it comes back once the card folds or closes. */}
+      {(!(selectedNode || selectedLine) || detailFolded) && <ComingHours
         frames={renderFrames}
         idx={idx}
-        setIdx={(i) => {
+        simulating={!!simulation}
+        onPick={(i) => {
           setPlaying(false);
           setIdx(i);
         }}
-        playing={playing}
-        togglePlay={() => setPlaying((p) => !p)}
-        mode={mode}
-        onModeChange={setMode}
-        selectedDate={selectedDate}
-        dayBounds={dayBounds}
-        windowLoading={windowLoading}
-        canPrev={canPrev && !windowLoading}
-        canNext={canNext && !windowLoading}
-        onSelectDate={selectDate}
-        onSelectBookmark={selectBookmark}
-        onStepDay={stepDay}
-      />
-      {simulation && (
-        <SimulationBadge
-          spec={simulation.spec}
-          frames={simulation.scenarioFrames}
-          frame={frame}
-          onExit={exitSim}
-        />
-      )}
-      {/* Mobile: stack the map above a collapsible chat/sidebar sheet.
-          Desktop (md+): map left, resizable sidebar on the right. */}
-      <div className="relative flex min-h-0 flex-1 flex-col md:flex-row">
-        <div className="relative min-h-0 flex-1">
-          {mode === "map" ? (
-            <MapView
+      />}
+    </section>
+  );
+
+  return (
+    // One agent runtime for the whole app, so the chat, the diagram's
+    // "ask about this" card and the composer's context row share it.
+    <AgentRuntimeProvider
+      timestamp={currentTs || frame.timestamp}
+      selection={selected}
+      simulation={simulation?.spec ?? null}
+    >
+      <AskContextCtx.Provider value={askContext}>
+        <div className="dark flex h-[100dvh] flex-col bg-background text-foreground">
+          <TopBar
+            frame={frame}
+            frames={renderFrames}
+            idx={idx}
+            setIdx={(i) => {
+              setPlaying(false);
+              setIdx(i);
+            }}
+            playing={playing}
+            togglePlay={() => setPlaying((p) => !p)}
+            selectedDate={selectedDate}
+            dayBounds={dayBounds}
+            windowLoading={windowLoading}
+            canPrev={canPrev && !windowLoading}
+            canNext={canNext && !windowLoading}
+            onSelectDate={selectDate}
+            onSelectBookmark={selectBookmark}
+            onStepDay={stepDay}
+          />
+          {simulation && (
+            <SimulationBadge
+              spec={simulation.spec}
+              frames={simulation.scenarioFrames}
               frame={frame}
-              meta={meta}
-              highlight={highlight}
-              selected={selected}
-              onSelect={setSelected}
-              zoomTo={zoomTo}
-              baseFrame={baseFrame}
-              simulating={!!simulation}
-            />
-          ) : (
-            <SldView
-              frame={frame}
-              meta={meta}
-              highlight={highlight}
-              selected={selected}
-              onSelect={setSelected}
-              zoomTo={zoomTo}
-              baseFrame={baseFrame}
-              simulating={!!simulation}
+              onExit={exitSim}
             />
           )}
-          <Legend showBusIcons={mode === "map"} />
-          {(selectedNode || selectedLine) && (
-            <DetailPanel
-              node={selectedNode}
-              line={selectedLine}
-              baseNode={baseNode}
-              baseLine={baseLine}
-              windowStartTs={windowStartTs}
-              windowCount={renderFrames.length}
-              onClose={() => setSelected(null)}
-              onGoTo={zoom}
+          {/* Chat is the main surface; the diagram sits beside it on desktop and
+              above it on phones. */}
+          <div className={cn("relative flex min-h-0 flex-1", isDesktop ? "flex-row" : "flex-col")}>
+            {!isDesktop && diagram}
+            <Sidebar
+              frame={frame}
+              meta={meta}
+              selected={selected}
+              onFocus={focus}
+              onClearFocus={clearFocus}
+              onSelect={setSelected}
+              onZoom={zoom}
+              simulation={simulation ? { spec: simulation.spec } : null}
+              simLoading={simLoading}
+              simError={simError}
+              onActivateSim={activateSim}
+              onExitSim={exitSim}
             />
-          )}
+            {isDesktop && diagram}
+          </div>
         </div>
-        <Sidebar
-          frame={frame}
-          meta={meta}
-          agentTimestamp={currentTs}
-          selected={selected}
-          onFocus={focus}
-          onClearFocus={clearFocus}
-          onSelect={setSelected}
-          onZoom={zoom}
-          simulation={simulation ? { spec: simulation.spec } : null}
-          simLoading={simLoading}
-          simError={simError}
-          onActivateSim={activateSim}
-          onExitSim={exitSim}
-        />
-      </div>
-    </div>
+      </AskContextCtx.Provider>
+    </AgentRuntimeProvider>
   );
 }

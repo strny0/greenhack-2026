@@ -133,6 +133,11 @@ def n1(timestamp: str = Query(...), limit: int = Query(60, ge=1, le=200)) -> dic
     }
 
 
+@app.get("/api/reserves")
+def reserves(timestamp: str = Query(...)) -> dict:
+    return engine.reserves(timestamp)
+
+
 @app.post("/api/whatif", response_model=WhatIfResponse)
 def whatif(req: WhatIfRequest) -> WhatIfResponse:
     return engine.run_whatif(req)

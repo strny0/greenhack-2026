@@ -15,8 +15,8 @@ import { OUT_OF_SERVICE_COLOR } from "./styling";
 // Classic SLD palette — single dark color for all bus bars; equipment type is
 // communicated by the attached symbol (G in circle for generators, ↓ for loads,
 // two-coil glyph mid-branch for transformers).
-const BAR_COLOR = "#2d3a55";
-const SYMBOL_COLOR = "#1a2233";
+const BAR_COLOR = "#8fa1aa";
+const SYMBOL_COLOR = "#d3d9d6";
 const SLACK_COLOR = "#b07cff";
 
 interface Props {
@@ -41,7 +41,14 @@ function screenY(y: number): number {
 
 // --- SLD primitives -----------------------------------------------------------
 
-const BAR_THICKNESS = 8;     // schematic units; ~5px at default zoom
+const LINE_HIT_WIDTH = 16;  // schematic units; ~10px invisible click band per line
+const BAR_HIT_PX = 12;      // on-screen px; invisible click band around each bus bar
+const BAR_THICKNESS = 6;     // schematic units; ~4px at default zoom
+const TAG_MIN_PCT = 50;      // lines at or above this get a percent tag
+const TAG_OVERVIEW_COUNT = 10; // at the overview, only the busiest few
+const FADED = 0.25;          // opacity of what lies outside the selection focus
+const LANDMARK_COUNT = 14;   // buses named at the overview, collisions permitting
+const LANDMARK_MW_PER_LINE = 60; // a connection counts like 60 MW in the ranking
 const ROUTE_OFFSET = 28;     // detour distance for same-y bus pairs
 const PARALLEL_STAGGER = 14; // midY separation per parallel circuit
 
@@ -161,6 +168,7 @@ function routePath(
 
 // --- component ----------------------------------------------------------------
 
+type LabelSpot = { left: boolean; dy: number };
 type Tooltip = { x: number; y: number; html: string } | null;
 
 export default function SldView({ frame, meta, highlight, selected, onSelect, zoomTo, baseFrame, simulating }: Props) {
@@ -240,6 +248,26 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
     });
   }, [frame.lines, coords, layout]);
 
+  // Landmarks: the buses an operator orients by, always named at the overview.
+  // Ranked by the power they handle (generation + load) plus how many lines
+  // meet there, so big plants, big loads and hubs come first.
+  const landmarks = useMemo(() => {
+    const degree = new Map<string, number>();
+    for (const l of frame.lines) {
+      degree.set(l.from_node, (degree.get(l.from_node) ?? 0) + 1);
+      degree.set(l.to_node, (degree.get(l.to_node) ?? 0) + 1);
+    }
+    const score = (n: GridNode) =>
+      Math.max(n.production_mw, 0) + Math.max(n.consumption_mw, 0) + LANDMARK_MW_PER_LINE * (degree.get(n.id) ?? 0);
+    return new Set(
+      [...frame.nodes]
+        .filter((n) => coords[n.id])
+        .sort((a, b) => score(b) - score(a))
+        .slice(0, LANDMARK_COUNT)
+        .map((n) => n.id),
+    );
+  }, [frame.nodes, frame.lines, coords]);
+
   const initial = useMemo(() => {
     const w = bbox.x_max - bbox.x_min;
     const h = bbox.y_max - bbox.y_min;
@@ -252,6 +280,17 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
   const [view, setView] = useState<Box>(initial);
   const [tip, setTip] = useState<Tooltip>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
+
+  // Screen size, so text and detail can be sized in pixels rather than in
+  // schematic units (which shrink to nothing at the overview zoom).
+  const [px, setPx] = useState<{ w: number; h: number } | null>(null);
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setPx({ w: el.clientWidth, h: el.clientHeight }));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   const dragRef = useRef<{ x: number; y: number; vx: number; vy: number } | null>(null);
 
   // viewBox tween. `viewRef` mirrors the committed view so an animation always
@@ -385,6 +424,129 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
     return `<b>${labelOf(n)}</b><br/>${role}${gens ? ` · ${gens}` : ""} · ${(n.vm_pu ?? 0).toFixed(3)} p.u.`;
   };
 
+  // Schematic units per screen pixel, and how far in from the overview we are.
+  // Detail appears in steps as the operator zooms (semantic zoom): the
+  // overview shows only the network and its state, equipment glyphs come in
+  // at 2x, and every bus gets its name at 3x.
+  const upp = px ? Math.max(view.w / px.w, view.h / px.h) : view.w / 700;
+  const fitUpp = px ? Math.max(initial.w / px.w, initial.h / px.h) : initial.w / 700;
+  const zoom = fitUpp / upp;
+  // Stroke weights shrink as you zoom in, so lines don't balloon into bands;
+  // they still grow a little, which keeps the zoom feeling physical.
+  const k = Math.pow(Math.max(zoom, 1), -0.75);
+  const bar = BAR_THICKNESS * k;
+  const showEquipment = zoom >= 2;
+  const showAllLabels = zoom >= 3;
+  // Selection focus: the selected element and its 1-hop neighbourhood (for a
+  // bus, its lines and their far-end buses; for a line, its two buses, the
+  // other lines at them and their far ends) stay at full strength and get
+  // names; everything else fades back.
+  const focus = useMemo(() => {
+    if (!selected) return null;
+    const nodes = new Set<string>();
+    const lines = new Set<string>();
+    const seeds: string[] = [];
+    if (selected.kind === "node") seeds.push(selected.id);
+    else {
+      const l = frame.lines.find((x) => x.id === selected.id);
+      if (!l) return null;
+      lines.add(l.id);
+      seeds.push(l.from_node, l.to_node);
+    }
+    for (const id of seeds) nodes.add(id);
+    for (const l of frame.lines) {
+      if (seeds.includes(l.from_node) || seeds.includes(l.to_node)) {
+        lines.add(l.id);
+        nodes.add(l.from_node);
+        nodes.add(l.to_node);
+      }
+    }
+    return { nodes, lines };
+  }, [selected, frame.lines]);
+  const nOp = (id: string) => (focus && !focus.nodes.has(id) ? FADED : 1);
+  const lOp = (id: string) => (focus && !focus.lines.has(id) ? FADED : 1);
+
+  // Busy lines (>= 50% loading) get a small tag at their midpoint with the
+  // percent and an arrow for the flow direction. At the overview only the
+  // busiest few, so the tags point at the story instead of carpeting it.
+  const tags: { g: NonNullable<(typeof branchGeom)[number]>; pct: number; dir: "l" | "r" | "u" | "d"; x0: number; y0: number; w: number; h: number }[] = [];
+  const placeTags = (placed: { x0: number; x1: number; y0: number; y1: number }[]) => {
+    const busy = branchGeom
+      .filter((g): g is NonNullable<typeof g> => !!g && g.l.in_service && (g.l.loading_pct ?? 0) >= TAG_MIN_PCT)
+      .sort((a, b) => (b.l.loading_pct ?? 0) - (a.l.loading_pct ?? 0))
+      .slice(0, zoom < 2 ? TAG_OVERVIEW_COUNT : Infinity);
+    for (const g of busy) {
+      const pct = Math.round(g.l.loading_pct ?? 0);
+      // Flow runs from the end with positive P; on the drawn route that is
+      // along the horizontal middle segment, or the vertical if there is none.
+      const forward = (g.l.p_from_mw ?? 0) >= 0;
+      const horiz = Math.abs(g.bx - g.ax) >= 1;
+      const sgn = (horiz ? Math.sign(g.bx - g.ax) : Math.sign(g.by - g.ay)) * (forward ? 1 : -1);
+      const dir = horiz ? (sgn >= 0 ? "r" : "l") : sgn >= 0 ? "d" : "u";
+      const w = (String(pct).length * 6.2 + 6 + 16) * upp;
+      const h = 14 * upp;
+      const box = { x0: g.midX - w / 2, x1: g.midX + w / 2, y0: g.midY - h / 2, y1: g.midY + h / 2 };
+      if (placed.some((p) => box.x0 < p.x1 && box.x1 > p.x0 && box.y0 < p.y1 && box.y1 > p.y0)) continue;
+      placed.push(box);
+      tags.push({ g, pct, dir, x0: box.x0, y0: box.y0, w, h });
+    }
+  };
+
+  // Which buses get a name. Must-show ones (selection, alerts, agent mentions)
+  // are placed first, then the landmarks, then (zoomed in) everything else;
+  // anything but a must-show is dropped when it would collide with a name
+  // already placed, so labels never print over each other.
+  const labelled = new Set<string>();
+  const labelSpot = new Map<string, LabelSpot>();
+  {
+    const placed: { x0: number; x1: number; y0: number; y1: number }[] = [];
+    const must = (n: GridNode) =>
+      n.state === "alert" ||
+      highlight.has(n.id) ||
+      (selected?.kind === "node" && selected.id === n.id) ||
+      !!focus?.nodes.has(n.id);
+    const rank = (n: GridNode) => (must(n) ? 2 : landmarks.has(n.id) ? 1 : 0);
+    const order = [...frame.nodes].sort((a, b) => rank(b) - rank(a));
+    let tagsPlaced = false;
+    for (const n of order) {
+      // Busy-line tags go in after the must-show names and before landmarks.
+      if (!tagsPlaced && rank(n) < 2) {
+        tagsPlaced = true;
+        placeTags(placed);
+      }
+      const isMust = must(n);
+      if (!showAllLabels && rank(n) === 0) continue;
+      const c = coords[n.id];
+      if (!c) continue;
+      // Try right of the bar, then left, then nudged up or down; skip spots
+      // that run off the visible diagram or hit a name already placed. A
+      // must-show that fits nowhere still goes on the right.
+      const half = layout.barLength(n.id) / 2 + 5 * upp;
+      const w = labelOf(n).length * 6.4 * upp;
+      const sy = screenY(c[1]);
+      const step = 14 * upp;
+      const spots: LabelSpot[] = [
+        { left: false, dy: 0 }, { left: true, dy: 0 },
+        { left: false, dy: -step }, { left: false, dy: step },
+        { left: true, dy: -step }, { left: true, dy: step },
+      ];
+      const boxOf = (sp: LabelSpot) => {
+        const x0 = sp.left ? c[0] - half - w : c[0] + half;
+        return { x0, x1: x0 + w, y0: sy + sp.dy - 8 * upp, y1: sy + sp.dy + 8 * upp };
+      };
+      const fits = (b: { x0: number; x1: number; y0: number; y1: number }) =>
+        b.x0 >= view.x && b.x1 <= view.x + view.w &&
+        !placed.some((p) => b.x0 < p.x1 && b.x1 > p.x0 && b.y0 < p.y1 && b.y1 > p.y0);
+      const spot = spots.find((sp) => fits(boxOf(sp)));
+      if (!spot && !isMust) continue;
+      const chosen = spot ?? spots[0];
+      placed.push(boxOf(chosen));
+      labelled.add(n.id);
+      labelSpot.set(n.id, chosen);
+    }
+    if (!tagsPlaced) placeTags(placed);
+  }
+
   const selectedLineGeom =
     selected?.kind === "line" ? branchGeom.find((g) => g?.l.id === selected.id) ?? null : null;
 
@@ -404,36 +566,23 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
         }}
         onDoubleClick={onDoubleClick}
       >
-        <rect x={initial.x} y={initial.y} width={initial.w * 10} height={initial.h * 10} fill="#f5f6f8" />
+        <rect x={initial.x} y={initial.y} width={initial.w * 10} height={initial.h * 10} fill="#1a272e" />
 
-        {/* region groupings — dashed rounded rectangles + label */}
+        {/* region groupings: a faint tonal panel per zone, named in small caps */}
         <g style={{ pointerEvents: "none" }}>
           {regions.map((r) => (
             <g key={`region-${r.zone}`}>
-              <rect
-                x={r.x}
-                y={r.y}
-                width={r.w}
-                height={r.h}
-                rx={16}
-                ry={16}
-                fill="none"
-                stroke="#8a99b0"
-                strokeWidth={1.5}
-                strokeDasharray="10 6"
-                strokeOpacity={0.65}
-              />
+              <rect x={r.x} y={r.y} width={r.w} height={r.h} rx={18} ry={18} fill="#203038" fillOpacity={0.55} />
               <text
-                x={r.x + 14}
-                y={r.y + 24}
-                fontSize={20}
-                fontWeight={700}
-                fill="#8a99b0"
-                fillOpacity={0.7}
-                fontFamily="sans-serif"
-                letterSpacing={1.5}
+                x={r.x + 10 * upp}
+                y={r.y + r.h - 10 * upp}
+                fontSize={12 * upp}
+                fontWeight={600}
+                fill="#7d8f98"
+                fontFamily="Barlow, sans-serif"
+                letterSpacing={1.2 * upp}
               >
-                {`Region ${r.zone.toUpperCase()}`}
+                {`REGION ${r.zone.replace(/^r/i, "")}`}
               </text>
             </g>
           ))}
@@ -443,14 +592,15 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
         <g>
           {branchGeom.map((g) => {
             if (!g) return null;
-            const w = lineWidth(g.l.loading_pct, g.l.kind) + 3;
+            const w = (lineWidth(g.l.loading_pct, g.l.kind) + 3) * k;
             return (
               <path
                 key={`c-${g.l.id}`}
+                opacity={lOp(g.l.id)}
                 d={g.d}
                 fill="none"
                 stroke={CASING_COLOR}
-                strokeOpacity={0.75}
+                strokeOpacity={0.45}
                 strokeWidth={w}
                 strokeLinecap="round"
                 strokeLinejoin="round"
@@ -468,9 +618,9 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
                 key={`h-${g.l.id}`}
                 d={g.d}
                 fill="none"
-                stroke="#ffd84d"
+                stroke="#8ed1c1"
                 strokeOpacity={0.7}
-                strokeWidth={14}
+                strokeWidth={14 * k}
                 strokeLinecap="round"
                 strokeLinejoin="round"
               />
@@ -492,7 +642,7 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
                   d={g.d}
                   fill="none"
                   stroke={d.tripped ? OUT_OF_SERVICE_COLOR : "#ff1f1f"}
-                  strokeWidth={lineWidth(g.l.loading_pct, g.l.kind) + 14}
+                  strokeWidth={(lineWidth(g.l.loading_pct, g.l.kind) + 14) * k}
                   strokeLinecap="round"
                   strokeLinejoin="round"
                 />
@@ -509,14 +659,41 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
             return (
               <path
                 key={`l-${l.id}`}
+                opacity={lOp(l.id)}
                 d={g.d}
                 fill="none"
                 stroke={loadingColor(l.loading_pct)}
-                strokeWidth={lineWidth(l.loading_pct, l.kind)}
+                strokeWidth={lineWidth(l.loading_pct, l.kind) * k}
                 strokeOpacity={l.in_service ? 1 : 0.3}
                 strokeDasharray={l.in_service ? undefined : "6 4"}
                 strokeLinecap="round"
                 strokeLinejoin="round"
+                style={{ cursor: "pointer" }}
+                onMouseEnter={(e) => setTipFor(e, lineTip(l))}
+                onMouseMove={(e) => setTipFor(e, lineTip(l))}
+                onMouseLeave={() => setTip(null)}
+                onClick={() => onSelect({ kind: "line", id: l.id })}
+              />
+            );
+          })}
+        </g>
+
+        {/* invisible wide click targets: the drawn lines are only 2-3px, too
+            thin to hit reliably, so each gets a ~10px transparent band */}
+        <g>
+          {branchGeom.map((g) => {
+            if (!g) return null;
+            const l = g.l;
+            return (
+              <path
+                key={`hit-${l.id}`}
+                d={g.d}
+                fill="none"
+                stroke="transparent"
+                strokeWidth={Math.max(LINE_HIT_WIDTH * k, 10 * upp)}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                pointerEvents="stroke"
                 style={{ cursor: "pointer" }}
                 onMouseEnter={(e) => setTipFor(e, lineTip(l))}
                 onMouseMove={(e) => setTipFor(e, lineTip(l))}
@@ -532,9 +709,9 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
           <path
             d={selectedLineGeom.d}
             fill="none"
-            stroke="#2f81f7"
+            stroke="#e9ece6"
             strokeOpacity={0.55}
-            strokeWidth={lineWidth(selectedLineGeom.l.loading_pct, selectedLineGeom.l.kind) + 8}
+            strokeWidth={(lineWidth(selectedLineGeom.l.loading_pct, selectedLineGeom.l.kind) + 8) * k}
             strokeLinecap="round"
             strokeLinejoin="round"
             style={{ pointerEvents: "none" }}
@@ -553,35 +730,54 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
               <rect
                 key={`nh-${n.id}`}
                 x={c[0] - len / 2 - 8}
-                y={sy - BAR_THICKNESS / 2 - 8}
+                y={sy - bar / 2 - 8}
                 width={len + 16}
-                height={BAR_THICKNESS + 16}
+                height={bar + 16}
                 rx={4}
-                fill="#ffd84d"
+                fill="#8ed1c1"
                 fillOpacity={0.55}
               />
             );
           })}
         </g>
 
-        {/* bus state halo (warn/alert wider stroke beneath bar) */}
-        <g>
+        {/* bus state: an alert gets a red halo; a warning only a thin amber
+            underline, so forty warnings don't paint the whole diagram amber */}
+        <g style={{ pointerEvents: "none" }}>
           {frame.nodes.map((n) => {
             if (n.state === "ok") return null;
             const c = coords[n.id];
             if (!c) return null;
             const len = layout.barLength(n.id);
             const sy = screenY(c[1]);
+            if (n.state === "warn") {
+              const y = sy + bar / 2 + 3 * upp;
+              return (
+                <line
+                  key={`ns-${n.id}`}
+                  opacity={nOp(n.id)}
+                  x1={c[0] - len / 2}
+                  y1={y}
+                  x2={c[0] + len / 2}
+                  y2={y}
+                  stroke={STATE_STROKE_COLOR.warn}
+                  strokeOpacity={0.9}
+                  strokeWidth={2 * upp}
+                  strokeLinecap="round"
+                />
+              );
+            }
             return (
               <line
                 key={`ns-${n.id}`}
+                opacity={nOp(n.id)}
                 x1={c[0] - len / 2}
                 y1={sy}
                 x2={c[0] + len / 2}
                 y2={sy}
                 stroke={STATE_STROKE_COLOR[n.state]}
                 strokeOpacity={0.85}
-                strokeWidth={BAR_THICKNESS + 6}
+                strokeWidth={bar + 6}
                 strokeLinecap="round"
               />
             );
@@ -606,7 +802,7 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
                   x2={c[0] + len / 2}
                   y2={sy}
                   stroke="#ff1f1f"
-                  strokeWidth={BAR_THICKNESS + 18}
+                  strokeWidth={bar + 18}
                   strokeLinecap="round"
                 />
               );
@@ -617,12 +813,12 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
         {/* transformer glyph — two overlapping circles at the branch midpoint */}
         <g>
           {branchGeom.map((g) => {
-            if (!g || g.l.kind !== "trafo") return null;
-            const r = 5;
+            if (!showEquipment || !g || g.l.kind !== "trafo") return null;
+            const r = 4.5 * upp;
             return (
-              <g key={`tr-${g.l.id}`} style={{ pointerEvents: "none" }}>
-                <circle cx={g.midX - r * 0.7} cy={g.midY} r={r} fill="#ffffff" stroke={SYMBOL_COLOR} strokeWidth={1.4} />
-                <circle cx={g.midX + r * 0.7} cy={g.midY} r={r} fill="#ffffff" stroke={SYMBOL_COLOR} strokeWidth={1.4} fillOpacity={0} />
+              <g key={`tr-${g.l.id}`} opacity={lOp(g.l.id)} style={{ pointerEvents: "none" }}>
+                <circle cx={g.midX - r * 0.7} cy={g.midY} r={r} fill="#1a272e" stroke={SYMBOL_COLOR} strokeWidth={1.2 * upp} />
+                <circle cx={g.midX + r * 0.7} cy={g.midY} r={r} fill="#1a272e" stroke={SYMBOL_COLOR} strokeWidth={1.2 * upp} fillOpacity={0} />
               </g>
             );
           })}
@@ -638,13 +834,45 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
             return (
               <line
                 key={`n-${n.id}`}
+                opacity={nOp(n.id)}
                 x1={c[0] - len / 2}
                 y1={sy}
                 x2={c[0] + len / 2}
                 y2={sy}
                 stroke={BAR_COLOR}
-                strokeWidth={BAR_THICKNESS}
+                strokeWidth={bar}
                 strokeLinecap="round"
+                style={{ cursor: "pointer" }}
+                onMouseEnter={(e) => setTipFor(e, nodeTip(n))}
+                onMouseMove={(e) => setTipFor(e, nodeTip(n))}
+                onMouseLeave={() => setTip(null)}
+                onClick={() => onSelect({ kind: "node", id: n.id })}
+              />
+            );
+          })}
+        </g>
+
+        {/* invisible click bands for bus bars: the bar is only a few px tall, so
+            a click just above or below it fell through to the line band and
+            selected a connected line. ~12px on screen at any zoom, drawn after
+            the line bands so a bar wins near its own edges. */}
+        <g>
+          {frame.nodes.map((n) => {
+            const c = coords[n.id];
+            if (!c) return null;
+            const len = layout.barLength(n.id);
+            const sy = screenY(c[1]);
+            return (
+              <line
+                key={`nhit-${n.id}`}
+                x1={c[0] - len / 2}
+                y1={sy}
+                x2={c[0] + len / 2}
+                y2={sy}
+                stroke="transparent"
+                strokeWidth={Math.max(bar, BAR_HIT_PX * upp)}
+                strokeLinecap="butt"
+                pointerEvents="stroke"
                 style={{ cursor: "pointer" }}
                 onMouseEnter={(e) => setTipFor(e, nodeTip(n))}
                 onMouseMove={(e) => setTipFor(e, nodeTip(n))}
@@ -658,6 +886,7 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
         {/* equipment symbols: G in circle above (gen/slack), ↓ below (load) */}
         <g>
           {frame.nodes.map((n) => {
+            if (!showEquipment) return null;
             const c = coords[n.id];
             if (!c) return null;
             const x = c[0];
@@ -666,34 +895,34 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
             const showLoad = n.n_loads > 0 || n.type === "load";
             const isSlack = n.is_slack || n.type === "slack";
             return (
-              <g key={`sym-${n.id}`} style={{ pointerEvents: "none" }}>
+              <g key={`sym-${n.id}`} opacity={nOp(n.id)} style={{ pointerEvents: "none" }}>
                 {showGen && (
                   <>
                     <line
                       x1={x}
-                      y1={sy - BAR_THICKNESS / 2}
+                      y1={sy - bar / 2}
                       x2={x}
-                      y2={sy - 16}
+                      y2={sy - 10 * upp}
                       stroke={SYMBOL_COLOR}
-                      strokeWidth={1.4}
+                      strokeWidth={1.2 * upp}
                     />
                     <circle
                       cx={x}
-                      cy={sy - 24}
-                      r={8}
-                      fill={isSlack ? SLACK_COLOR : "#ffffff"}
+                      cy={sy - 17 * upp}
+                      r={7 * upp}
+                      fill={isSlack ? SLACK_COLOR : "#1a272e"}
                       stroke={SYMBOL_COLOR}
-                      strokeWidth={1.4}
+                      strokeWidth={1.2 * upp}
                     />
                     <text
                       x={x}
-                      y={sy - 24}
+                      y={sy - 17 * upp}
                       textAnchor="middle"
                       dominantBaseline="central"
-                      fontSize={11}
+                      fontSize={9 * upp}
                       fontWeight={700}
-                      fill={isSlack ? "#ffffff" : SYMBOL_COLOR}
-                      fontFamily="serif"
+                      fill={isSlack ? "#1a272e" : SYMBOL_COLOR}
+                      fontFamily="Barlow, sans-serif"
                     >
                       {isSlack ? "S" : "G"}
                     </text>
@@ -703,19 +932,94 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
                   <>
                     <line
                       x1={x}
-                      y1={sy + BAR_THICKNESS / 2}
+                      y1={sy + bar / 2}
                       x2={x}
-                      y2={sy + 14}
+                      y2={sy + 9 * upp}
                       stroke={SYMBOL_COLOR}
-                      strokeWidth={1.4}
+                      strokeWidth={1.2 * upp}
                     />
                     <polygon
-                      points={`${x - 5},${sy + 14} ${x + 5},${sy + 14} ${x},${sy + 24}`}
+                      points={`${x - 4 * upp},${sy + 9 * upp} ${x + 4 * upp},${sy + 9 * upp} ${x},${sy + 16 * upp}`}
                       fill={SYMBOL_COLOR}
                     />
                   </>
                 )}
               </g>
+            );
+          })}
+        </g>
+
+        {/* busy-line tags: percent on a dark backing, band-coloured, with a
+            small arrow for the flow direction */}
+        <g style={{ pointerEvents: "none" }}>
+          {tags.map((t) => {
+            const col = loadingColor(t.pct);
+            const ax = t.x0 + t.w - 8 * upp;
+            const ay = t.y0 + t.h / 2;
+            const a = 3.5 * upp;
+            const tri =
+              t.dir === "r" ? `${ax - a},${ay - a} ${ax + a},${ay} ${ax - a},${ay + a}`
+              : t.dir === "l" ? `${ax + a},${ay - a} ${ax - a},${ay} ${ax + a},${ay + a}`
+              : t.dir === "d" ? `${ax - a},${ay - a} ${ax + a},${ay - a} ${ax},${ay + a}`
+              : `${ax - a},${ay + a} ${ax + a},${ay + a} ${ax},${ay - a}`;
+            return (
+              <g key={`tag-${t.g.l.id}`} opacity={lOp(t.g.l.id)}>
+                <rect
+                  x={t.x0}
+                  y={t.y0}
+                  width={t.w}
+                  height={t.h}
+                  rx={3 * upp}
+                  fill="#10181d"
+                  fillOpacity={0.92}
+                  stroke={col}
+                  strokeOpacity={0.6}
+                  strokeWidth={1 * upp}
+                />
+                <text
+                  x={t.x0 + 5 * upp}
+                  y={ay}
+                  dominantBaseline="central"
+                  fontSize={10.5 * upp}
+                  fontWeight={600}
+                  fill={col}
+                  fontFamily="Barlow, sans-serif"
+                >
+                  {`${t.pct}%`}
+                </text>
+                <polygon points={tri} fill={col} />
+              </g>
+            );
+          })}
+        </g>
+
+        {/* bus names: all of them when zoomed in, otherwise only the ones that
+            matter (alerts, the selection, and what the agent mentioned) */}
+        <g style={{ pointerEvents: "none" }}>
+          {frame.nodes.map((n) => {
+            if (!labelled.has(n.id)) return null;
+            const c = coords[n.id];
+            if (!c) return null;
+            const len = layout.barLength(n.id);
+            const sy = screenY(c[1]);
+            const fs = 12 * upp;
+            return (
+              <text
+                key={`lbl-${n.id}`}
+                opacity={nOp(n.id)}
+                x={labelSpot.get(n.id)?.left ? c[0] - len / 2 - 5 * upp : c[0] + len / 2 + 5 * upp}
+                textAnchor={labelSpot.get(n.id)?.left ? "end" : "start"}
+                y={sy + (labelSpot.get(n.id)?.dy ?? 0)}
+                dominantBaseline="central"
+                fontSize={fs}
+                fill="#d3d9d6"
+                stroke="#1a272e"
+                strokeWidth={3 * upp}
+                paintOrder="stroke"
+                fontFamily="Barlow, sans-serif"
+              >
+                {labelOf(n)}
+              </text>
             );
           })}
         </g>
@@ -732,12 +1036,12 @@ export default function SldView({ frame, meta, highlight, selected, onSelect, zo
             return (
               <rect
                 x={c[0] - len / 2 - 4}
-                y={sy - BAR_THICKNESS / 2 - 4}
+                y={sy - bar / 2 - 4}
                 width={len + 8}
-                height={BAR_THICKNESS + 8}
+                height={bar + 8}
                 rx={3}
                 fill="none"
-                stroke="#2f81f7"
+                stroke="#e9ece6"
                 strokeWidth={2.5}
                 style={{ pointerEvents: "none" }}
               />

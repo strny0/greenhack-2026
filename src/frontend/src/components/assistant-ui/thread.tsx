@@ -11,13 +11,9 @@ import {
   ReasoningText,
   ReasoningTrigger,
 } from "@/components/assistant-ui/reasoning";
-import {
-  ToolGroupContent,
-  ToolGroupRoot,
-  ToolGroupTrigger,
-} from "@/components/assistant-ui/tool-group";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { ToolCallView, hasToolView } from "@/agent/tool-views";
+import { EvidenceTrail, LiveSteps } from "@/agent/evidence";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -30,7 +26,6 @@ import {
   ErrorPrimitive,
   groupPartByType,
   MessagePrimitive,
-  SuggestionPrimitive,
   ThreadPrimitive,
   useAuiState,
   useThreadRuntime,
@@ -48,16 +43,23 @@ import {
   RefreshCwIcon,
   SquareIcon,
   Trash2Icon,
+  XIcon,
 } from "lucide-react";
-import type { FC } from "react";
+import { useMemo, useState, type FC } from "react";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import { useAskContext } from "@/agent/ask-context";
 
 export const Thread: FC = () => {
   return (
     <ThreadPrimitive.Root
       className="aui-root aui-thread-root bg-background @container relative flex h-full flex-col"
       style={{
-        ["--thread-max-width" as string]: "44rem",
-        ["--composer-radius" as string]: "24px",
+        ["--thread-max-width" as string]: "48rem",
+        ["--composer-radius" as string]: "14px",
         ["--composer-padding" as string]: "10px",
       }}
     >
@@ -134,45 +136,80 @@ const ThreadScrollToBottom: FC = () => {
 };
 
 const ThreadWelcome: FC = () => {
+  const ctx = useAskContext();
   return (
     <div className="aui-thread-welcome-root my-auto flex grow flex-col">
-      <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-center">
-        <div className="aui-thread-welcome-message flex size-full flex-col justify-center px-4">
-          <h1 className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in fill-mode-both text-2xl font-semibold duration-200">
-            Feeling <span className="smooth-shimmer">smooth</span>, operator?
-          </h1>
-          <p className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in fill-mode-both text-muted-foreground text-xl delay-75 duration-200">
-            Let's keep the grid humming. What can I help with?
-          </p>
-        </div>
+      <div className="aui-thread-welcome-center flex w-full grow flex-col justify-center px-1 pb-6">
+        <h1 className="text-[28px] leading-tight font-bold tracking-[-0.015em]">
+          What do you want to know about the grid?
+        </h1>
+        <p className="text-muted-foreground mt-2 max-w-[56ch] text-base">
+          Ask what's happening, why, or what would happen if something trips.
+          Answers come from the live load flow{ctx ? ` at ${ctx.hourLabel}` : ""},
+          and anything I mention lights up on the diagram.
+        </p>
       </div>
       <ThreadSuggestions />
     </div>
   );
 };
 
-const ThreadSuggestions: FC = () => {
+/**
+ * What the next question will be about: the hour, the selected element (which
+ * the operator can drop), and an active simulation. Mirrors exactly what the
+ * runtime sends to the backend with each message.
+ */
+const ComposerContextRow: FC = () => {
+  const ctx = useAskContext();
+  if (!ctx) return null;
   return (
-    <div className="aui-thread-welcome-suggestions grid w-full gap-2 pb-4 @md:grid-cols-2">
-      <ThreadPrimitive.Suggestions>
-        {() => <ThreadSuggestionItem />}
-      </ThreadPrimitive.Suggestions>
+    <div className="flex flex-wrap items-center gap-1.5 px-1 text-[13px] text-muted-foreground">
+      <span>Asking about</span>
+      <span className="num rounded-md bg-muted px-2 py-0.5 text-foreground">{ctx.hourLabel}</span>
+      {ctx.selectionLabel && (
+        <span className="inline-flex items-center gap-0.5 rounded-md border border-agent-border bg-agent-surface py-0.5 pr-0.5 pl-2 text-foreground">
+          {ctx.selectionLabel}
+          <button
+            type="button"
+            onClick={ctx.clearSelection}
+            aria-label={`Stop asking about ${ctx.selectionLabel}`}
+            className="inline-flex size-5 items-center justify-center rounded text-muted-foreground hover:text-foreground"
+          >
+            <XIcon className="size-3" />
+          </button>
+        </span>
+      )}
+      {ctx.simulationLabel && (
+        <span className="rounded-md border border-sim-border bg-sim-surface px-2 py-0.5 text-foreground">
+          Simulation: {ctx.simulationLabel}
+        </span>
+      )}
     </div>
   );
 };
 
-const ThreadSuggestionItem: FC = () => {
+// Starter questions phrased the way an operator would ask them at the desk.
+const STARTERS = [
+  "What's the state of the grid right now?",
+  "Which lines are busiest, and why?",
+  "Any voltage problems I should know about?",
+  "What happens if the busiest line trips?",
+];
+
+const ThreadSuggestions: FC = () => {
+  const runtime = useThreadRuntime();
   return (
-    <div className="aui-thread-welcome-suggestion-display fade-in slide-in-from-bottom-2 animate-in fill-mode-both duration-200 nth-[n+3]:hidden @md:nth-[n+3]:block">
-      <SuggestionPrimitive.Trigger send asChild>
+    <div className="aui-thread-welcome-suggestions grid w-full gap-2 pb-4 @md:grid-cols-2">
+      {STARTERS.map((q) => (
         <Button
+          key={q}
           variant="ghost"
-          className="aui-thread-welcome-suggestion bg-background hover:bg-muted h-auto w-full flex-wrap items-start justify-start gap-1 rounded-3xl border px-4 py-3 text-start text-sm transition-colors @md:flex-col"
+          onClick={() => runtime.append(q)}
+          className="bg-card hover:bg-muted h-auto min-h-12 w-full justify-start rounded-xl border px-4 py-3 text-start text-[15px] font-normal whitespace-normal"
         >
-          <SuggestionPrimitive.Title className="aui-thread-welcome-suggestion-text-1 font-medium" />
-          <SuggestionPrimitive.Description className="aui-thread-welcome-suggestion-text-2 text-muted-foreground empty:hidden" />
+          {q}
         </Button>
-      </SuggestionPrimitive.Trigger>
+      ))}
     </div>
   );
 };
@@ -185,10 +222,11 @@ const Composer: FC = () => {
           data-slot="aui_composer-shell"
           className="bg-background focus-within:border-ring/75 focus-within:ring-ring/20 data-[dragging=true]:border-ring data-[dragging=true]:bg-accent/50 flex w-full flex-col gap-2 rounded-(--composer-radius) border p-(--composer-padding) transition-shadow focus-within:ring-2 data-[dragging=true]:border-dashed"
         >
+          <ComposerContextRow />
           <ComposerAttachments />
           <ComposerPrimitive.Input
-            placeholder="Send a message..."
-            className="aui-composer-input placeholder:text-muted-foreground/80 max-h-32 min-h-10 w-full resize-none bg-transparent px-1.75 py-1 text-sm outline-none"
+            placeholder="Ask what's happening, why, or what if"
+            className="aui-composer-input placeholder:text-muted-foreground/80 max-h-40 min-h-12 w-full resize-none bg-transparent px-1.75 py-1 text-base outline-none"
             rows={1}
             autoFocus
             aria-label="Message input"
@@ -212,7 +250,7 @@ const ComposerAction: FC = () => {
             type="button"
             variant="default"
             size="icon"
-            className="aui-composer-send size-8 rounded-full"
+            className="aui-composer-send size-10 rounded-[10px]"
             aria-label="Send message"
           >
             <ArrowUpIcon className="aui-composer-send-icon size-4" />
@@ -225,7 +263,7 @@ const ComposerAction: FC = () => {
             type="button"
             variant="default"
             size="icon"
-            className="aui-composer-cancel size-8 rounded-full"
+            className="aui-composer-cancel size-10 rounded-[10px]"
             aria-label="Stop generating"
           >
             <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
@@ -247,30 +285,36 @@ const MessageError: FC = () => {
 };
 
 /**
- * Header for a coalesced tool-call group. Resolves the tool name behind each
- * grouped part index (from the live message parts) so the collapsed trigger can
- * show one icon per call — a glanceable preview of what ran before expanding.
+ * Everything the agent did before answering (its reasoning and lookups) as one
+ * block: open while it works, so each step shows as it happens, then folded to
+ * a single line so the answer leads. Expanding it shows the full trail.
  */
-const ToolGroupHeader: FC<{ indices: readonly number[]; active: boolean }> = ({
+const ChainOfThought: FC<{ indices: readonly number[]; running: boolean; children: React.ReactNode }> = ({
   indices,
-  active,
+  running,
+  children,
 }) => {
-  const toolNames = useAuiState((s) =>
-    indices
-      .map((i) => {
-        const part = s.message.parts[i];
-        return part?.type === "tool-call" ? part.toolName : null;
-      })
-      .filter((n): n is string => n != null)
-      .join(" "),
+  const [open, setOpen] = useState<boolean | null>(null);
+  const nTools = useAuiState(
+    (s) => indices.filter((i) => s.message.parts[i]?.type === "tool-call").length,
   );
-
+  const isOpen = open ?? running;
+  if (running) return <div data-slot="aui_chain-of-thought">{children}</div>;
   return (
-    <ToolGroupTrigger
-      count={indices.length}
-      active={active}
-      toolNames={toolNames ? toolNames.split(" ") : []}
-    />
+    <Collapsible open={isOpen} onOpenChange={setOpen} data-slot="aui_chain-of-thought" className="mb-3">
+      <CollapsibleTrigger className="group/cot text-muted-foreground hover:text-foreground flex items-center gap-1.5 py-1 text-[13px] transition-colors">
+        <ChevronRightIcon className="size-3.5 shrink-0 transition-transform group-data-[state=open]/cot:rotate-90" />
+        <span>
+          {isOpen ? "Hide" : "Show"} how I worked it out
+          {nTools > 0 && (
+            <span className="text-muted-foreground/80">
+              {" "}· {nTools} lookup{nTools === 1 ? "" : "s"}
+            </span>
+          )}
+        </span>
+      </CollapsibleTrigger>
+      <CollapsibleContent className="border-border mt-1 border-s ps-3">{children}</CollapsibleContent>
+    </Collapsible>
   );
 };
 
@@ -280,6 +324,40 @@ const AssistantMessage: FC = () => {
   // for pt-[n] use -mb-[n + 6] & min-h-[n + 6] to preserve compensation
   const ACTION_BAR_PT = "pt-1.5";
   const ACTION_BAR_HEIGHT = `-mb-7.5 min-h-7.5 ${ACTION_BAR_PT}`;
+  // A tool group's own status only says "running" while a call's arguments
+  // stream in, so between lookups it reads as complete. Treat the trailing
+  // group of a message that is still running as live, so the steps stay up
+  // until the answer text starts.
+  const messageRunning = useAuiState((s) => s.message.status?.type === "running");
+  const lastPartIndex = useAuiState((s) => s.message.parts.length - 1);
+  // Text the model writes between lookups ("Let me check the reserves…") is
+  // part of the working trail, not the answer: anything before the last tool
+  // call joins the "how I worked it out" block instead of reading as an answer.
+  const interimKey = useAuiState((s) => {
+    const parts = s.message.parts;
+    let lastTool = -1;
+    parts.forEach((p, i) => {
+      if (p.type === "tool-call") lastTool = i;
+    });
+    return parts
+      .slice(0, Math.max(lastTool, 0))
+      .filter((p) => p.type === "text")
+      .map((p) => (p as { text: string }).text)
+      .join("\u0000");
+  });
+  const groupBy = useMemo(() => {
+    const interim = new Set(interimKey ? interimKey.split("\u0000") : []);
+    const byType = groupPartByType({
+      reasoning: ["group-chainOfThought", "group-reasoning"],
+      "tool-call": ["group-chainOfThought", "group-tool"],
+      "standalone-tool-call": [],
+    });
+    type Key = "group-chainOfThought" | "group-reasoning" | "group-tool" | "group-narration";
+    return (part: Parameters<typeof byType>[0], ctx: Parameters<typeof byType>[1]): readonly Key[] =>
+      part.type === "text" && interim.has((part as { text: string }).text)
+        ? ["group-chainOfThought", "group-narration"]
+        : byType(part, ctx);
+  }, [interimKey]);
 
   return (
     <MessagePrimitive.Root
@@ -292,21 +370,21 @@ const AssistantMessage: FC = () => {
         // [contain-intrinsic-size:auto_24px] fixes issue #4104, don't change without checking for regressions
         className="text-foreground px-2 leading-relaxed wrap-break-word [contain-intrinsic-size:auto_24px] [content-visibility:auto]"
       >
-        <MessagePrimitive.GroupedParts
-          groupBy={groupPartByType({
-            reasoning: ["group-chainOfThought", "group-reasoning"],
-            "tool-call": ["group-chainOfThought", "group-tool"],
-            "standalone-tool-call": [],
-          })}
-        >
+        <MessagePrimitive.GroupedParts groupBy={groupBy}>
           {({ part, children }) => {
             switch (part.type) {
               case "group-chainOfThought":
-                return <div data-slot="aui_chain-of-thought">{children}</div>;
+                return (
+                  <ChainOfThought indices={part.indices} running={messageRunning}>
+                    {children}
+                  </ChainOfThought>
+                );
+              case "group-narration":
+                return <div className="aui-narration">{children}</div>;
               case "group-reasoning": {
                 const running = part.status.type === "running";
                 return (
-                  <ReasoningRoot defaultOpen={running}>
+                  <ReasoningRoot defaultOpen={running} variant="ghost" className="mb-2">
                     <ReasoningTrigger active={running} />
                     <ReasoningContent aria-busy={running}>
                       <ReasoningText>{children}</ReasoningText>
@@ -314,16 +392,19 @@ const AssistantMessage: FC = () => {
                   </ReasoningRoot>
                 );
               }
-              case "group-tool":
-                return (
-                  <ToolGroupRoot>
-                    <ToolGroupHeader
-                      indices={part.indices}
-                      active={part.status.type === "running"}
-                    />
-                    <ToolGroupContent>{children}</ToolGroupContent>
-                  </ToolGroupRoot>
-                );
+              case "group-tool": {
+                // While the agent works, show each lookup as it happens with a
+                // Stop button; once done, fold back to the compact group.
+                if (
+                  part.status.type === "running" ||
+                  (messageRunning && part.indices[part.indices.length - 1] === lastPartIndex)
+                )
+                  return <LiveSteps indices={part.indices} />;
+                // Done: the enclosing "how I worked it out" block is already
+                // the disclosure, so list each call by itself (each one says in
+                // plain words what it did and opens to its details).
+                return <div className="mb-2 flex flex-col gap-1.5">{children}</div>;
+              }
               case "text":
                 return <MarkdownText />;
               case "reasoning":
@@ -348,6 +429,7 @@ const AssistantMessage: FC = () => {
             }
           }}
         </MessagePrimitive.GroupedParts>
+        <EvidenceTrail />
         <MessageError />
       </div>
 
