@@ -87,10 +87,15 @@ is computed for the currently viewed hour, so differences between hours are norm
 - "What happens if X trips / fails / goes out?" about ONE line or bus is a single \
 what_if move, not N-1: call what_if(op="trip_line", "trip_gen" or "trip_bus", target=X). A generator / \
 power plant / unit trip is trip_gen (local load stays on); use trip_bus only for \
-losing a whole substation. Read \
+losing a whole substation. Lost generation is picked up by all online \
+controllable units in proportion to their size (the result's `pickup` says by \
+whom), not by the slack alone. Read \
 the result (it already lists new alerts and top movers), add one or two current-hour \
 lookups only if needed, answer, then reset. Use n1_contingency_analysis only when \
 the operator asks about outages in general ("what is the worst single outage?").
+- Tools that take an element (what_if, node_detail, line_detail, bus_neighbors, \
+element_history) accept its display name as well as its id, so pass the name you \
+were given; never search for an id with run_python.
 - Name elements by their display name only. Don't add the id in brackets after \
 a name ("Bay Point Jct (bus_030)"); the chat turns names into clickable chips, so \
 the id is redundant. Use a bare id only when an element has no name.
@@ -99,7 +104,8 @@ name or "this line/bus"), use the selection's id directly in tools. Don't search
 for it by name with bus_neighbors, most_loaded_lines or run_python. Likewise, \
 an id given in brackets in the question is the element to use.
 - WHAT-IF SANDBOX (the `what_if` tool): build hypotheticals step by step and chain \
-them. Each call is one move — trip_line / trip_gen / trip_bus / scale_load — and moves STACK \
+them. Each call is one move — trip_line / trip_gen / trip_bus / scale_load, or an \
+operator control: redispatch / set_voltage / add_reactive — and moves STACK \
 on top of the grid you're viewing. After any move, the current-hour tools \
 (grid_summary, most_loaded_lines, line_detail, node_detail, bus_neighbors, \
 active_alerts, explain_hour, loading_context, deep_dive) all report the resulting \
@@ -130,7 +136,12 @@ timestamp if the query applies to the current date - check just in case.
 slack voltage SET-POINTS in the data (check voltage_setpoints / node_detail's \
 voltage_control). The solver does not clamp voltages, so never call these readings \
 a solver bound or model artefact. The operator action is to lower the AVR / \
-voltage set-points of the units involved (or add reactive absorption).
+voltage set-points of the units involved (or add reactive absorption); test it \
+with what_if set_voltage / add_reactive before recommending a value.
+- Reserves: for "do we have enough reserve / what if we lose another unit / \
+who picks up", call `reserves` (spinning headroom of online dispatchable units, \
+the largest unit and plant, and the margin after losing them). It reads the \
+what-if sandbox, so after a trip it shows the reserve that is left.
 - Only refer to simulations, tool results or numbers from THIS conversation. Never \
 claim you ran or saw something earlier unless it is in the conversation, and keep \
 your tables consistent with what the tools returned (e.g. alert counts).
@@ -492,9 +503,26 @@ def most_loaded_lines(ctx: RunContext[Deps], limit: int = 8) -> list[dict]:
     return [_line_brief(l) for l in ranked]
 
 
+def _resolve_id(ts: str, ref: str | None) -> str | None:
+    """Map a display name ("Delta Energy Center #2", any case) to its element id,
+    so the model can pass the names it sees instead of hunting for ids. Ids pass
+    through unchanged; an unknown reference comes back as given."""
+    if not ref:
+        return ref
+    f = engine.base_frame(ts)
+    if any(x.id == ref for x in f.nodes) or any(x.id == ref for x in f.lines):
+        return ref
+    key = ref.strip().casefold()
+    for x in [*f.nodes, *f.lines]:
+        if key in ((x.label or "").casefold(), (x.name or "").casefold()):
+            return x.id
+    return ref
+
+
 @agent.tool
 def line_detail(ctx: RunContext[Deps], line_id: str) -> dict:
-    """Full live values for one branch by its id/name (line or transformer)."""
+    """Full live values for one branch (line or transformer), by id or display name."""
+    line_id = _resolve_id(ctx.deps.timestamp, line_id)
     f = _frame_for(ctx)
     l = next((x for x in f.lines if x.id == line_id), None)
     if l is None:
@@ -504,7 +532,8 @@ def line_detail(ctx: RunContext[Deps], line_id: str) -> dict:
 
 @agent.tool
 def node_detail(ctx: RunContext[Deps], node_id: str) -> dict:
-    """Full live values for one bus/substation by its id/name."""
+    """Full live values for one bus/substation, by id or display name."""
+    node_id = _resolve_id(ctx.deps.timestamp, node_id)
     f = _frame_for(ctx)
     n = next((x for x in f.nodes if x.id == node_id), None)
     if n is None:
@@ -540,8 +569,9 @@ def bus_neighbors(ctx: RunContext[Deps], bus_id: str, hops: int = 1) -> dict:
     """Local topology around a bus, for traversing the network: the branches
     incident to it and the buses reachable within `hops` (1-3), each with hop
     distance and type. Each branch carries its live loading. Use this to answer
-    "what does this bus connect to" or to walk the grid hop by hop."""
-    return engine.neighbors(ctx.deps.timestamp, bus_id, hops)
+    "what does this bus connect to" or to walk the grid hop by hop. `bus_id`
+    may also be a display name."""
+    return engine.neighbors(ctx.deps.timestamp, _resolve_id(ctx.deps.timestamp, bus_id), hops)
 
 
 @agent.tool
@@ -598,6 +628,7 @@ def element_history(
     in the result flag when the window hit the start/end of the dataset."""
     if kind not in ("line", "node"):
         return {"error": "kind must be 'line' or 'node'"}
+    element_id = _resolve_id(ctx.deps.timestamp, element_id)
     hours_back = max(0, min(hours_back, 168))
     hours_fwd = max(0, min(hours_fwd, 168))
     if hours_back + hours_fwd == 0:
@@ -697,6 +728,18 @@ def _whatif_envelope(ctx: RunContext[Deps]) -> dict:
         {"element_id": a.element_id, "message": a.message} for a in new_alerts[:5]
     ]
     out["top_movers"] = movers[:3]
+    pickup = engine.scenario_pickup(ctx.deps.timestamp, spec)
+    if pickup and abs(pickup.get("imbalance_mw", 0)) >= 0.5:
+        out["pickup"] = {
+            "lost_or_added_mw": pickup["imbalance_mw"],
+            "shared_by_units_mw": pickup["shared_mw"],
+            "left_to_slack_mw": pickup["slack_mw"],
+            "n_units": pickup.get("n_units", 0),
+            "biggest_responders": [
+                {"bus": u["bus"], "fuel": u["fuel"], "delta_mw": u["delta_mw"]}
+                for u in pickup["units"][:3]
+            ],
+        }
     if not scen.summary.converged:
         out["warning"] = "load flow did NOT converge — likely islanding / voltage collapse."
     return out
@@ -708,6 +751,7 @@ def _apply_whatif(
     """Pure logic for the what_if tool (no RunContext machinery), so it is unit
     testable. Mutates ctx.deps.whatif and returns a compact envelope or an error."""
     stack = ctx.deps.whatif
+    target = _resolve_id(ctx.deps.timestamp, target)
     if op == "status":
         return _whatif_envelope(ctx)
     if op == "reset":
@@ -743,7 +787,29 @@ def _apply_whatif(
         stack.push(Action(op="scale_load", factor=float(factor),
                           label=f"load x{factor:g}"))
         return _whatif_envelope(ctx)
-    return {"error": f"unknown op '{op}'. Use trip_line|trip_bus|trip_gen|scale_load|undo|reset|status."}
+    if op in ("redispatch", "set_voltage", "add_reactive"):
+        if not target or factor is None or factor == 0:
+            return {"error": f"{op} needs target=<bus id> and a non-zero factor."}
+        f = engine.base_frame(ctx.deps.timestamp)
+        el = next((n for n in f.nodes if n.id == target), None)
+        if el is None:
+            return {"error": f"No bus '{target}'. Use node_detail/most_loaded_lines for ids."}
+        name = el.label or el.name
+        if op == "redispatch":
+            if not el.production_mw and factor < 0:
+                return {"error": f"Bus '{target}' has no online generation to lower."}
+            label = f"redispatch {name} {factor:+g} MW"
+        elif op == "set_voltage":
+            if not 0.9 <= factor <= 1.2:
+                return {"error": "set_voltage factor is a set-point in p.u., between 0.90 and 1.20."}
+            if not el.production_mw and not el.is_slack:
+                return {"error": f"Bus '{target}' has no generator or slack whose set-point could change; use add_reactive."}
+            label = f"voltage set-point at {name} to {factor:g} p.u."
+        else:
+            label = f"{'capacitor' if factor > 0 else 'reactor'} at {name} {factor:+g} Mvar"
+        stack.push(Action(op=op, target=target, factor=float(factor), label=label))
+        return _whatif_envelope(ctx)
+    return {"error": f"unknown op '{op}'. Use trip_line|trip_bus|trip_gen|scale_load|redispatch|set_voltage|add_reactive|undo|reset|status."}
 
 
 @agent.tool
@@ -762,6 +828,17 @@ def what_if(
       • op="trip_bus",   target=<bus id>      drop a bus's gens AND loads (a
                                               substation loss)
       • op="scale_load", factor=1.5           multiply all load
+      • op="redispatch", target=<bus id>, factor=+200
+                                              change the units' output at a bus
+                                              by MW (the slack balances it, so
+                                              pair an up with a down)
+      • op="set_voltage", target=<bus id>, factor=1.05
+                                              voltage set-point (p.u.) of the
+                                              generators / slack at a bus
+      • op="add_reactive", target=<bus id>, factor=-50
+                                              shunt at a bus, Mvar: + injects
+                                              (capacitor, raises voltage),
+                                              - absorbs (reactor, lowers it)
       • op="undo"                             pop the last move
       • op="reset"                            clear the whole sandbox
       • op="status"                           re-report the current stack
@@ -771,9 +848,22 @@ def what_if(
     bus_neighbors, active_alerts, explain_hour, loading_context, deep_dive) read
     the HYPOTHETICAL grid — inspect it with those. Historical/N-1/forecast tools
     keep reading the real recorded grid. Returns a compact stack + base-vs-now max
-    loading + new alerts + top movers. ALWAYS `reset` once you've answered, so a
-    later question describes the real grid again."""
+    loading + new alerts + top movers, and for trips/load changes `pickup`: lost
+    power is shared by all online controllable units in proportion to size.
+    ALWAYS `reset` once you've answered, so a later question describes the real
+    grid again."""
     return _apply_whatif(ctx, op, target, factor)
+
+
+@agent.tool
+def reserves(ctx: RunContext[Deps]) -> dict:
+    """Generation reserve at the viewed hour: spinning reserve (headroom of
+    online dispatchable units, by fuel), offline dispatchable capacity, the
+    largest online unit and plant, and the margin left if either trips (negative
+    = could not be covered from spinning reserve). Solar, wind and run-of-river
+    hydro are excluded. Reads the what-if sandbox / simulation: after a trip it
+    reports the reserve LEFT once the lost power has been picked up."""
+    return engine.reserves(ctx.deps.timestamp, _effective_spec(ctx))
 
 
 @agent.tool
@@ -1062,8 +1152,9 @@ async def stream_agent(
     if selection and selection.get("id") and selection.get("kind") in ("node", "line"):
         sel = Selection(kind=selection["kind"], id=str(selection["id"]))
     sim = None
-    if simulation and (simulation.get("disconnect_lines") or simulation.get("trip_nodes") or simulation.get("trip_gens") or simulation.get("load_scale", 1.0) != 1.0):
-        sim = ScenarioSpec(**simulation)
+    if simulation:
+        spec = ScenarioSpec(**simulation)
+        sim = spec if has_actions(spec) else None
     deps = Deps(timestamp=ts, selection=sel, simulation=sim)
     prompt = ""
     history = messages
