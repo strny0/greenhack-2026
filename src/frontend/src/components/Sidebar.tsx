@@ -20,6 +20,18 @@ import {
 import { cn } from "@/lib/utils";
 import { buildLabelMap, formatGenTypes, labelOf, NODE_KIND_LABEL } from "@/lib/gridmeta";
 
+function n1FailureText(r: ContingencyResult): string {
+  if (r.failure_mode === "islanding") {
+    const n = r.island_buses?.length ?? 0;
+    return `islands ${n} bus${n === 1 ? "" : "es"} · ${Math.round(r.island_load_mw ?? 0)} MW load cut off`;
+  }
+  if (r.failure_mode === "voltage_collapse") {
+    const at = r.solves_at_load_pct != null ? `solves only at ≤${r.solves_at_load_pct}% load` : "no AC solution at any tested load";
+    return `voltage collapse — network stays connected, ${at}`;
+  }
+  return "load flow does not converge — loss of supply / collapse";
+}
+
 export interface AlertRow {
   id: string;
   kind: "line" | "node";
@@ -87,8 +99,8 @@ function Item({
       )}
     >
       <div className="flex items-center justify-between gap-2 font-semibold">
-        <span className="truncate">{title}</span>
-        {pill}
+        <span className="min-w-0 truncate">{title}</span>
+        {pill != null && <span className="shrink-0">{pill}</span>}
       </div>
       {desc != null && <div className="mt-0.5 text-[11px] text-muted-foreground">{desc}</div>}
     </div>
@@ -348,7 +360,7 @@ function N1Tab({ ts, labels, onFocus, onSelect }: { ts: string; labels: Record<s
                   {r.max_loading_pct}%
                 </Pill>
               ) : (
-                <Pill tone="crit">islanding</Pill>
+                <Pill tone="crit">{r.failure_mode === "voltage_collapse" ? "collapse" : "islanding"}</Pill>
               )
             }
             desc={
@@ -356,7 +368,7 @@ function N1Tab({ ts, labels, onFocus, onSelect }: { ts: string; labels: Record<s
                 ? r.n_overloads > 0
                   ? `${r.n_overloads} overloaded: ${r.overloaded.slice(0, 2).map((o) => `${labels[o.id] ?? o.name} ${o.loading_pct}%`).join(", ")}`
                   : "no overloads — grid survives this contingency"
-                : "load flow does not converge — loss of supply / collapse"
+                : n1FailureText(r)
             }
           />
         ))}

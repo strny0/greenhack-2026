@@ -46,3 +46,13 @@ def test_compose_empty_stack_no_base_has_no_actions():
     assert spec.trip_nodes == []
     assert spec.load_scale == 1.0
     assert not has_actions(spec)
+
+
+def test_trip_gen_composes_separately_from_trip_bus():
+    s = WhatIfStack()
+    s.push(Action(op="trip_gen", target="bus_G"))
+    spec = compose(ScenarioSpec(trip_gens=["bus_H"]), s)
+    assert spec.trip_gens == ["bus_G", "bus_H"]
+    assert spec.trip_nodes == []  # a unit trip must not drop the bus's load
+    assert has_actions(spec)
+    assert has_actions(ScenarioSpec(trip_gens=["bus_G"]))

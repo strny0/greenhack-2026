@@ -50,10 +50,24 @@ _MAX_ATTEMPTS = 3  # transient sandbox failures are retried up to this many time
 # cgroup (`pids.max`) — worth it for a public deploy, overkill for a localhost demo.
 
 
+def _try_setrlimit(which: int, limit: int) -> None:
+    """Lower a soft+hard limit, tolerating platforms that refuse it.
+
+    macOS rejects ``RLIMIT_AS`` (ValueError) because its virtual address space is
+    huge from the start; an unhandled error here kills every sandbox start with
+    "Exception occurred in preexec_fn". The CPU cap and the wall-clock kill still
+    bound the child there.
+    """
+    try:
+        resource.setrlimit(which, (limit, limit))
+    except (ValueError, OSError):
+        pass
+
+
 def _preexec() -> None:  # runs in the child, after fork, before exec
     resource.setrlimit(resource.RLIMIT_CPU, (_CPU_SECONDS, _CPU_SECONDS + 2))
-    resource.setrlimit(resource.RLIMIT_AS, (_ADDRESS_SPACE, _ADDRESS_SPACE))
-    resource.setrlimit(resource.RLIMIT_FSIZE, (_FILE_SIZE, _FILE_SIZE))
+    _try_setrlimit(resource.RLIMIT_AS, _ADDRESS_SPACE)
+    _try_setrlimit(resource.RLIMIT_FSIZE, _FILE_SIZE)
     os.setsid()  # own session/process group, so we can killpg the whole subtree
 
 

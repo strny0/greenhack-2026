@@ -83,7 +83,7 @@ function ElementChip({ id, children }: { id: string; children?: ReactNode }) {
   const inner = (
     <>
       <span className={cn("inline-block size-1.5 shrink-0 rounded-full", dot)} />
-      {children ?? id}
+      {children ?? ctx?.label(kind, id) ?? id}
     </>
   );
   if (!interactive)

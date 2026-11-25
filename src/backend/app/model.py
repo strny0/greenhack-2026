@@ -91,12 +91,22 @@ class ContingencyResult(BaseModel):
     max_loading_pct: float
     n_overloads: int
     overloaded: list[dict]  # [{id, name, loading_pct}]
+    # Only for non-converging trips: why there is no AC solution.
+    # "islanding"       -> the trip splits the network; island_* say what is cut off
+    # "voltage_collapse" -> network stays connected but the AC flow has no solution
+    failure_mode: str | None = None
+    island_buses: list[str] = []
+    island_load_mw: float | None = None
+    island_gen_mw: float | None = None
+    dc_max_loading_pct: float | None = None  # DC (linear) flow, still solvable
+    solves_at_load_pct: float | None = None  # highest system load % at which AC solves
 
 
 class WhatIfRequest(BaseModel):
     timestamp: str
     disconnect_lines: list[str] = []
     trip_nodes: list[str] = []  # bus ids whose gens/loads drop out
+    trip_gens: list[str] = []  # bus ids whose generators (only) drop out
     load_scale: float = 1.0  # global load multiplier
 
 
@@ -114,6 +124,7 @@ class ScenarioSpec(BaseModel):
     label: str = ""
     disconnect_lines: list[str] = []
     trip_nodes: list[str] = []
+    trip_gens: list[str] = []  # bus ids whose generators trip; local load stays on
     load_scale: float = 1.0
     resolved: list[str] = []  # element id(s) the preset chose
     feasible: bool = True

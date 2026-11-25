@@ -502,6 +502,104 @@ def build_alerts(frame: StateFrame) -> list[Alert]:
 _n1_cache: "OrderedDict[str, list[ContingencyResult]]" = OrderedDict()
 
 
+_COLLAPSE_LOAD_STEPS = (0.95, 0.9, 0.8, 0.7, 0.5)
+
+
+def _diagnose_nonconvergence(net) -> dict:
+    """Explain a trip with no AC solution (``net`` has the element already out).
+
+    Islanding and voltage collapse need different operator responses, so tell
+    them apart instead of reporting a bare "did not converge":
+      * islanding: the in-service network splits; report what is cut off from
+        the slack (its buses, load and generation);
+      * voltage collapse: still one network, the DC flow solves, and the AC flow
+        only solves again with less load. Report the DC peak loading and the
+        highest system-load % at which the AC flow solves.
+    Restores the net's loads before returning.
+    """
+    import networkx as nx
+    import pandapower.topology as top
+
+    g = top.create_nxgraph(net, respect_switches=True, include_out_of_service=False)
+    slack_buses = {int(b) for b in net.ext_grid.loc[net.ext_grid["in_service"].astype(bool), "bus"]}
+    live = net.bus.index[net.bus["in_service"].astype(bool)]
+    reachable: set[int] = set()
+    for s in slack_buses:
+        if s in g:
+            reachable |= nx.node_connected_component(g, s)
+    cut = [int(b) for b in live if int(b) not in reachable]
+    if cut:
+        cut_set = set(cut)
+        ld = net.load[net.load["in_service"].astype(bool) & net.load["bus"].isin(cut_set)]
+        gn = net.gen[net.gen["in_service"].astype(bool) & net.gen["bus"].isin(cut_set)]
+        return {
+            "failure_mode": "islanding",
+            "island_buses": [str(net.bus.at[b, "name"]) for b in cut][:20],
+            "island_load_mw": round(float(ld["p_mw"].sum()), 1),
+            "island_gen_mw": round(float(gn["p_mw"].sum()), 1),
+        }
+
+    out: dict = {"failure_mode": "voltage_collapse"}
+    try:
+        pp.rundcpp(net)
+        out["dc_max_loading_pct"] = round(float(np.nanmax(net.res_line["loading_percent"])), 1)
+    except Exception:
+        pass
+    p0, q0 = net.load["p_mw"].copy(), net.load["q_mvar"].copy()
+    try:
+        for f in _COLLAPSE_LOAD_STEPS:
+            net.load["p_mw"], net.load["q_mvar"] = p0 * f, q0 * f
+            if _solve(net):
+                out["solves_at_load_pct"] = round(f * 100)
+                break
+    finally:
+        net.load["p_mw"], net.load["q_mvar"] = p0, q0
+    return out
+
+
+_setpoint_cache: "OrderedDict[str, dict]" = OrderedDict()
+
+
+def voltage_setpoints(timestamp: str) -> dict:
+    """Voltage set-points of in-service generators and the slack at an hour.
+
+    In an AC load flow a generator bus is a PV bus: its voltage is HELD at the
+    unit's scheduled set-point (vm_pu), not solved for. So a bus reading 1.20 p.u.
+    is usually a unit scheduled at 1.20, or a bus next to one, and not a solver
+    clamp. Returns ``by_bus`` (bus id -> highest in-service unit set-point),
+    ``slack`` (bus id -> set-point) and a ``summary`` of the unit set-points.
+    """
+    ts = store.nearest_timestamp(timestamp)
+    cached = _setpoint_cache.get(ts)
+    if cached is not None:
+        return cached
+    net = store.read_net(ts)
+    names = net.bus["name"].astype(str)
+    gens = net.gen[net.gen["in_service"].astype(bool) & (net.gen["vm_pu"] > 0.5)]
+    by_bus: dict[str, float] = {}
+    for _, g in gens.iterrows():
+        b = names.at[int(g["bus"])]
+        by_bus[b] = round(max(by_bus.get(b, 0.0), float(g["vm_pu"])), 3)
+    slack = {
+        names.at[int(r["bus"])]: round(float(r["vm_pu"]), 3)
+        for _, r in net.ext_grid.iterrows()
+        if bool(r["in_service"])
+    }
+    vm = gens["vm_pu"].astype(float)
+    summary = {
+        "n_units": int(len(vm)),
+        "median_pu": round(float(vm.median()), 3) if len(vm) else None,
+        "min_pu": round(float(vm.min()), 3) if len(vm) else None,
+        "max_pu": round(float(vm.max()), 3) if len(vm) else None,
+        "share_at_or_above_1_15_pu": round(float((vm >= 1.15).mean()), 2) if len(vm) else None,
+    }
+    out = {"by_bus": by_bus, "slack": slack, "summary": summary}
+    _setpoint_cache[ts] = out
+    if len(_setpoint_cache) > config.FRAME_CACHE_SIZE:
+        _setpoint_cache.popitem(last=False)
+    return out
+
+
 def run_n1(timestamp: str, limit: int | None = None) -> list[ContingencyResult]:
     """Trip each in-service line one at a time, re-solve, rank by stress.
 
@@ -576,11 +674,12 @@ def run_n1(timestamp: str, limit: int | None = None) -> list[ContingencyResult]:
                     max_loading_pct=0.0,
                     n_overloads=0,
                     overloaded=[],
+                    **_diagnose_nonconvergence(net),
                 )
             )
         net.line.at[idx, "in_service"] = True
 
-    # rank: non-converged (islanding) first, then by worst resulting loading
+    # rank: non-converged (islanding / collapse) first, then by worst resulting loading
     results.sort(key=lambda r: (r.converged, -r.max_loading_pct))
 
     _n1_cache[ts] = results
@@ -827,10 +926,11 @@ def assess_deviation(timestamp: str) -> dict:
 LOAD_SURGE_SCALE = 1.5  # global load multiplier for the "load surge" preset
 
 
-def _apply_scenario(net, disconnect_lines, trip_nodes, load_scale) -> None:
+def _apply_scenario(net, disconnect_lines, trip_nodes, load_scale, trip_gens=()) -> None:
     """Mutate a pandapower net in place: take lines out of service, trip buses
-    (drop their gens/loads), and/or scale all load. Shared by run_whatif and the
-    whole-day simulation path so both behave identically."""
+    (drop their gens/loads), trip only the generators at buses (``trip_gens``,
+    local load stays connected — a real unit trip), and/or scale all load. Shared
+    by run_whatif and the whole-day simulation path so both behave identically."""
     name_to_line_idx = {str(r["name"]): idx for idx, r in net.line.iterrows()}
     for lid in disconnect_lines:
         if lid in name_to_line_idx:
@@ -845,6 +945,13 @@ def _apply_scenario(net, disconnect_lines, trip_nodes, load_scale) -> None:
         for idx, r in net.load.iterrows():
             if int(r["bus"]) in trip_bus_idx:
                 net.load.at[idx, "in_service"] = False
+
+    if trip_gens:
+        bus_idx_by_name = {str(r["name"]): idx for idx, r in net.bus.iterrows()}
+        gen_bus_idx = {bus_idx_by_name[n] for n in trip_gens if n in bus_idx_by_name}
+        for idx, r in net.gen.iterrows():
+            if int(r["bus"]) in gen_bus_idx:
+                net.gen.at[idx, "in_service"] = False
 
     if load_scale != 1.0:
         net.load["p_mw"] = net.load["p_mw"] * load_scale
@@ -861,6 +968,7 @@ def _scenario_sig(timestamp: str, spec: ScenarioSpec) -> tuple:
         store.nearest_timestamp(timestamp),
         tuple(sorted(spec.disconnect_lines)),
         tuple(sorted(spec.trip_nodes)),
+        tuple(sorted(spec.trip_gens)),
         round(spec.load_scale, 6),
     )
 
@@ -874,7 +982,7 @@ def scenario_frame(timestamp: str, spec: ScenarioSpec) -> StateFrame:
         return _scenario_cache[key]
     ts = store.nearest_timestamp(timestamp)
     net = store.read_net(ts)
-    _apply_scenario(net, spec.disconnect_lines, spec.trip_nodes, spec.load_scale)
+    _apply_scenario(net, spec.disconnect_lines, spec.trip_nodes, spec.load_scale, spec.trip_gens)
     converged = _solve(net)
     frame = extract_frame(net, ts, converged)
     _scenario_cache[key] = frame
@@ -906,8 +1014,13 @@ def resolve_preset(preset: str, timestamp: str) -> ScenarioSpec:
         bus = max(cand, key=lambda n: n.production_mw)
         return ScenarioSpec(
             preset=preset,
-            label=f"Tripped generation at {bus.label or bus.name} ({round(bus.production_mw)} MW offline)",
-            trip_nodes=[bus.id],
+            # Generators only: the bus's local load stays connected, as in a real
+            # unit trip. The MW figure is for the hour the preset was resolved at.
+            label=(
+                f"Tripped generation at {bus.label or bus.name} "
+                f"({round(bus.production_mw)} MW at {ts[11:16]})"
+            ),
+            trip_gens=[bus.id],
             resolved=[bus.id],
         )
     if preset == "load_surge":
@@ -937,7 +1050,7 @@ def run_whatif(req: WhatIfRequest) -> WhatIfResponse:
     base = base_frame(ts)
 
     net = store.read_net(ts)
-    _apply_scenario(net, req.disconnect_lines, req.trip_nodes, req.load_scale)
+    _apply_scenario(net, req.disconnect_lines, req.trip_nodes, req.load_scale, req.trip_gens)
 
     converged = _solve(net)
     scenario = extract_frame(net, ts, converged)

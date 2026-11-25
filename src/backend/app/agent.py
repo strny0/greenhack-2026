@@ -85,7 +85,9 @@ the question is about contingencies or operator actions, and keep limits modest.
 is computed for the currently viewed hour, so differences between hours are normal \
 (the grid is not "changing").
 - "What happens if X trips / fails / goes out?" about ONE line or bus is a single \
-what_if move, not N-1: call what_if(op="trip_line" or "trip_bus", target=X), read \
+what_if move, not N-1: call what_if(op="trip_line", "trip_gen" or "trip_bus", target=X). A generator / \
+power plant / unit trip is trip_gen (local load stays on); use trip_bus only for \
+losing a whole substation. Read \
 the result (it already lists new alerts and top movers), add one or two current-hour \
 lookups only if needed, answer, then reset. Use n1_contingency_analysis only when \
 the operator asks about outages in general ("what is the worst single outage?").
@@ -97,7 +99,7 @@ name or "this line/bus"), use the selection's id directly in tools. Don't search
 for it by name with bus_neighbors, most_loaded_lines or run_python. Likewise, \
 an id given in brackets in the question is the element to use.
 - WHAT-IF SANDBOX (the `what_if` tool): build hypotheticals step by step and chain \
-them. Each call is one move — trip_line / trip_bus / scale_load — and moves STACK \
+them. Each call is one move — trip_line / trip_gen / trip_bus / scale_load — and moves STACK \
 on top of the grid you're viewing. After any move, the current-hour tools \
 (grid_summary, most_loaded_lines, line_detail, node_detail, bus_neighbors, \
 active_alerts, explain_hour, loading_context, deep_dive) all report the resulting \
@@ -124,6 +126,14 @@ deltas and % where they add clarity, but drop the statistical notation entirely 
 it is explicitly asked for.
 - When doing tool calls that require a timestamp, make sure to always re-fetch the current day \
 timestamp if the query applies to the current date - check just in case.
+- High voltage: buses at or near 1.20 p.u. are held there by the generator and \
+slack voltage SET-POINTS in the data (check voltage_setpoints / node_detail's \
+voltage_control). The solver does not clamp voltages, so never call these readings \
+a solver bound or model artefact. The operator action is to lower the AVR / \
+voltage set-points of the units involved (or add reactive absorption).
+- Only refer to simulations, tool results or numbers from THIS conversation. Never \
+claim you ran or saw something earlier unless it is in the conversation, and keep \
+your tables consistent with what the tools returned (e.g. alert counts).
 - You are read-only: you advise, you do not switch equipment.
 
 Output discipline (a control-room console, not a chat toy):
@@ -133,6 +143,8 @@ evidence (a short table or a few sentences), then what to watch or do next.
 - Reply with the FINAL answer only. Never narrate your plan ("Let me pull…", \
 "Alright, here's…", "Let me check…") and never expose internal reasoning or scratch \
 text — the operator sees only your answer.
+- Never put a table or a second paragraph inside a numbered list item; it breaks \
+the list rendering. Put the table before or after the list, or use headed sections.
 - Never draw ASCII-art or box-drawing-character charts/sparklines. Present series as a \
 short markdown table or a sentence; the UI renders real charts.
 - Never surface σ, z-scores, surprise-z, or percentile-rank numbers to the operator — \
@@ -503,7 +515,24 @@ def node_detail(ctx: RunContext[Deps], node_id: str) -> dict:
         "min_vm_pu": n.min_vm_pu,
         "max_vm_pu": n.max_vm_pu,
         "vm_kv": n.vm_kv,
+        **_voltage_control(ctx, n.id),
     }
+
+
+def _voltage_control(ctx: RunContext[Deps], bus_id: str) -> dict:
+    """What holds this bus's voltage: a generator / slack set-point, or nothing
+    local (then its voltage follows the set-points of nearby units)."""
+    try:
+        sp = engine.voltage_setpoints(ctx.deps.timestamp)
+    except Exception:  # never let a lookup failure break node_detail
+        return {}
+    if bus_id in sp["slack"]:
+        return {"voltage_setpoint_pu": sp["slack"][bus_id],
+                "voltage_control": "slack set-point (voltage held at this value)"}
+    if bus_id in sp["by_bus"]:
+        return {"voltage_setpoint_pu": sp["by_bus"][bus_id],
+                "voltage_control": "generator set-point (PV bus: voltage held at this value)"}
+    return {"voltage_control": "none local; voltage follows nearby generator set-points"}
 
 
 @agent.tool
@@ -518,7 +547,8 @@ def bus_neighbors(ctx: RunContext[Deps], bus_id: str, hops: int = 1) -> dict:
 @agent.tool
 def active_alerts(ctx: RunContext[Deps], limit: int = 15) -> list[dict]:
     """Active alerts and warnings (overloaded lines, out-of-band voltages),
-    most severe first."""
+    most severe first. For high-voltage warnings, call voltage_setpoints: in this
+    dataset they normally come from generator voltage set-points, not the solver."""
     f = _frame_for(ctx)
     alerts = engine.build_alerts(f)[: max(1, min(limit, 50))]
     return [
@@ -532,6 +562,22 @@ def active_alerts(ctx: RunContext[Deps], limit: int = 15) -> list[dict]:
         }
         for a in alerts
     ]
+
+
+@agent.tool
+def voltage_setpoints(ctx: RunContext[Deps]) -> dict:
+    """Generator and slack voltage set-points for the hour being viewed (real
+    recorded schedule). Use this to explain high-voltage warnings: a generator
+    bus is a PV bus, so its voltage is HELD at the unit's set-point, and buses
+    nearby are pushed up with it. The AC solver does not clamp voltages, so a bus
+    at exactly 1.20 p.u. is a unit (or slack) scheduled at 1.20, not a solver bound.
+    Returns a summary of unit set-points plus the units scheduled at or above the
+    1.10 p.u. band (bus id -> set-point)."""
+    sp = engine.voltage_setpoints(ctx.deps.timestamp)
+    high = dict(sorted(((b, v) for b, v in sp["by_bus"].items() if v >= 1.10),
+                       key=lambda kv: -kv[1])[:40])
+    return {"summary": sp["summary"], "slack": sp["slack"],
+            "units_at_or_above_1_10_pu": high}
 
 
 @agent.tool
@@ -566,8 +612,12 @@ def n1_contingency_analysis(ctx: RunContext[Deps]) -> dict:
     """Deterministic N-1 security analysis: trip each in-service line, re-solve
     (For one named line or bus, use what_if instead; this is for "which single
     outage is worst?".)
-    the load flow, and rank by worst resulting stress. Non-converging trips mean
-    islanding / voltage collapse (most critical). Returns the worst contingencies.
+    the load flow, and rank by worst resulting stress. Non-converging trips are the
+    most critical; each carries `failure_mode`: "islanding" (with the cut-off
+    island_buses / island_load_mw / island_gen_mw) or "voltage_collapse" (still one
+    network; dc_max_loading_pct shows flows are fine, solves_at_load_pct is the
+    highest system load % at which the AC flow solves). Report the mode as given;
+    don't guess "islanding or collapse". Returns the worst contingencies.
 
     Always analyzes EVERY in-service line (the result is complete and cached, so
     repeat calls are instant); `limit` is ignored for the analysis. N-1 reflects
@@ -583,6 +633,18 @@ def n1_contingency_analysis(ctx: RunContext[Deps]) -> dict:
                 "max_loading_pct": r.max_loading_pct,
                 "n_overloads": r.n_overloads,
                 "overloaded": r.overloaded[:5],
+                **(
+                    {
+                        "failure_mode": r.failure_mode,
+                        "island_buses": r.island_buses,
+                        "island_load_mw": r.island_load_mw,
+                        "island_gen_mw": r.island_gen_mw,
+                        "dc_max_loading_pct": r.dc_max_loading_pct,
+                        "solves_at_load_pct": r.solves_at_load_pct,
+                    }
+                    if not r.converged
+                    else {}
+                ),
             }
             for r in results[:12]
         ],
@@ -654,7 +716,7 @@ def _apply_whatif(
     if op == "undo":
         a = stack.undo()
         return {**_whatif_envelope(ctx), "undone": a.display() if a else None}
-    if op in ("trip_line", "trip_bus"):
+    if op in ("trip_line", "trip_bus", "trip_gen"):
         if not target:
             return {"error": f"{op} needs a target id (e.g. a branch/bus id)."}
         f = engine.base_frame(ctx.deps.timestamp)
@@ -668,8 +730,12 @@ def _apply_whatif(
             el = next((n for n in f.nodes if n.id == target), None)
             if el is None:
                 return {"error": f"No bus '{target}'. Use node_detail/most_loaded_lines for ids."}
-            stack.push(Action(op="trip_bus", target=target,
-                              label=f"trip {el.label or el.name}"))
+            if op == "trip_gen" and not el.production_mw:
+                return {"error": f"Bus '{target}' has no online generation to trip."}
+            stack.push(Action(op=op, target=target,
+                              label=(f"trip generation at {el.label or el.name} "
+                                     f"({round(el.production_mw)} MW)")
+                              if op == "trip_gen" else f"trip {el.label or el.name}"))
         return _whatif_envelope(ctx)
     if op == "scale_load":
         if not factor or factor <= 0:
@@ -677,7 +743,7 @@ def _apply_whatif(
         stack.push(Action(op="scale_load", factor=float(factor),
                           label=f"load x{factor:g}"))
         return _whatif_envelope(ctx)
-    return {"error": f"unknown op '{op}'. Use trip_line|trip_bus|scale_load|undo|reset|status."}
+    return {"error": f"unknown op '{op}'. Use trip_line|trip_bus|trip_gen|scale_load|undo|reset|status."}
 
 
 @agent.tool
@@ -689,9 +755,12 @@ def what_if(
 ) -> dict:
     """Stateful what-if SANDBOX you can chain and unwind. One call = one move.
     This is THE tool for "what happens if <this line/bus> trips?": one
-    trip_line/trip_bus call answers it; do not run N-1 for a single element.
+    trip_line/trip_gen/trip_bus call answers it; do not run N-1 for a single element.
       • op="trip_line",  target=<branch id>   take a line out of service
-      • op="trip_bus",   target=<bus id>      drop a bus's gens & loads
+      • op="trip_gen",   target=<bus id>      trip the generators at a bus; its
+                                              local load stays on (a unit trip)
+      • op="trip_bus",   target=<bus id>      drop a bus's gens AND loads (a
+                                              substation loss)
       • op="scale_load", factor=1.5           multiply all load
       • op="undo"                             pop the last move
       • op="reset"                            clear the whole sandbox
@@ -993,7 +1062,7 @@ async def stream_agent(
     if selection and selection.get("id") and selection.get("kind") in ("node", "line"):
         sel = Selection(kind=selection["kind"], id=str(selection["id"]))
     sim = None
-    if simulation and (simulation.get("disconnect_lines") or simulation.get("trip_nodes") or simulation.get("load_scale", 1.0) != 1.0):
+    if simulation and (simulation.get("disconnect_lines") or simulation.get("trip_nodes") or simulation.get("trip_gens") or simulation.get("load_scale", 1.0) != 1.0):
         sim = ScenarioSpec(**simulation)
     deps = Deps(timestamp=ts, selection=sel, simulation=sim)
     prompt = ""

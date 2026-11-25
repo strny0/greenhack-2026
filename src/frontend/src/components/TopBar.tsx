@@ -97,7 +97,9 @@ export default function TopBar({
     <header className="z-10 flex flex-wrap items-center gap-x-6 gap-y-2 border-b bg-card px-5 py-2.5 lg:flex-nowrap">
       <Brand />
 
-      <dl className="m-0 hidden flex-1 gap-5 lg:flex">
+      {/* Below lg the KPIs wrap onto their own row instead of disappearing: the
+          operator should always see load, the busiest line and the alert count. */}
+      <dl className="order-last m-0 flex w-full flex-wrap gap-x-5 gap-y-1 lg:order-none lg:w-auto lg:flex-1 lg:flex-nowrap">
         <Kpi
           label="Generation"
           value={`${s.total_generation_mw.toLocaleString()} MW`}

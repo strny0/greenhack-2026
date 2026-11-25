@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 
 from .model import ScenarioSpec
 
-VALID_OPS = ("trip_line", "trip_bus", "scale_load")
+VALID_OPS = ("trip_line", "trip_bus", "trip_gen", "scale_load")
 
 
 @dataclass
@@ -34,6 +34,8 @@ class Action:
             return f"trip line {self.target}"
         if self.op == "trip_bus":
             return f"trip bus {self.target}"
+        if self.op == "trip_gen":
+            return f"trip generation at {self.target}"
         if self.op == "scale_load":
             return f"scale load x{self.factor}"
         return self.op
@@ -68,12 +70,15 @@ def compose(base: ScenarioSpec | None, stack: WhatIfStack) -> ScenarioSpec:
     ``stack`` into one effective ScenarioSpec. Trips union; load scales multiply."""
     lines = set(base.disconnect_lines) if base else set()
     nodes = set(base.trip_nodes) if base else set()
+    gens = set(base.trip_gens) if base else set()
     scale = base.load_scale if base else 1.0
     for a in stack.actions:
         if a.op == "trip_line" and a.target:
             lines.add(a.target)
         elif a.op == "trip_bus" and a.target:
             nodes.add(a.target)
+        elif a.op == "trip_gen" and a.target:
+            gens.add(a.target)
         elif a.op == "scale_load" and a.factor:
             scale *= a.factor
     return ScenarioSpec(
@@ -81,10 +86,11 @@ def compose(base: ScenarioSpec | None, stack: WhatIfStack) -> ScenarioSpec:
         label="; ".join(stack.labels()) or (base.label if base else ""),
         disconnect_lines=sorted(lines),
         trip_nodes=sorted(nodes),
+        trip_gens=sorted(gens),
         load_scale=round(scale, 6),
     )
 
 
 def has_actions(spec: ScenarioSpec) -> bool:
     """True when the spec actually changes the grid (so it needs a re-solve)."""
-    return bool(spec.disconnect_lines or spec.trip_nodes or spec.load_scale != 1.0)
+    return bool(spec.disconnect_lines or spec.trip_nodes or spec.trip_gens or spec.load_scale != 1.0)

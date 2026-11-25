@@ -217,7 +217,7 @@ export default function DetailPanel({ node, line, baseNode, baseLine, windowStar
                 />
                 <Row k="P from" v={`${line.p_from_mw ?? "—"} MW`} />
                 <Row k="P to" v={`${line.p_to_mw ?? "—"} MW`} />
-                <Row k="Current / rating" v={`${line.i_ka ?? "—"} / ${line.max_i_ka || "—"} kA`} />
+                <Row k="Current / rating" v={`${line.i_ka != null ? line.i_ka.toFixed(2) : "—"} / ${line.max_i_ka ? line.max_i_ka.toFixed(2) : "—"} kA`} />
               </div>
             </>
           )}

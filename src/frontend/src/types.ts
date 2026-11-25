@@ -80,6 +80,12 @@ export interface ContingencyResult {
   max_loading_pct: number;
   n_overloads: number;
   overloaded: { id: string; name: string; loading_pct: number }[];
+  failure_mode?: "islanding" | "voltage_collapse" | null;
+  island_buses?: string[];
+  island_load_mw?: number | null;
+  island_gen_mw?: number | null;
+  dc_max_loading_pct?: number | null;
+  solves_at_load_pct?: number | null;
 }
 
 export interface WhatIfResponse {
@@ -100,6 +106,7 @@ export interface ScenarioSpec {
   label: string;
   disconnect_lines: string[];
   trip_nodes: string[];
+  trip_gens?: string[];
   load_scale: number;
   resolved: string[];
   feasible: boolean;

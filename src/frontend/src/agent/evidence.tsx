@@ -1,7 +1,8 @@
-import { useState, type FC } from "react";
+import { useContext, useState, type FC } from "react";
 import { CheckIcon, ChevronRightIcon, LoaderIcon, SquareIcon } from "lucide-react";
 import { useAuiState, useThreadRuntime } from "@assistant-ui/react";
 import { useAskContext } from "@/agent/ask-context";
+import { GridRefContext } from "@/agent/grid-refs";
 import { cn } from "@/lib/utils";
 
 /**
@@ -14,10 +15,19 @@ type Args = Record<string, unknown> | undefined;
 
 const str = (v: unknown) => (v == null || v === "" ? null : String(v));
 
-/** One sentence per tool call, in the operator's words. */
-export function describeStep(toolName: string, args: Args, running = false): string {
+/** Maps an element id (bus_012, branch_011_012_1) to its display name. */
+type NameOf = (id: string) => string;
+const idOnly: NameOf = (id) => id;
+
+/** One sentence per tool call, in the operator's words. Element ids are shown by
+ * their display name when `nameOf` is given, never as raw internal ids. */
+export function describeStep(toolName: string, args: Args, running = false, nameOf: NameOf = idOnly): string {
   const a = args ?? {};
   const done = !running;
+  const nm = (v: unknown) => {
+    const id = str(v);
+    return id == null ? null : nameOf(id);
+  };
   switch (toolName) {
     case "grid_summary":
       return done ? "Read the grid totals" : "Reading the grid totals";
@@ -28,19 +38,19 @@ export function describeStep(toolName: string, args: Args, running = false): str
     case "most_loaded_lines":
       return done ? "Ranked the busiest lines" : "Ranking the busiest lines";
     case "line_detail":
-      return `${done ? "Looked up" : "Looking up"} line ${str(a.line_id) ?? ""}`.trim();
+      return `${done ? "Looked up" : "Looking up"} line ${nm(a.line_id) ?? ""}`.trim();
     case "node_detail":
-      return `${done ? "Looked up" : "Looking up"} bus ${str(a.node_id) ?? ""}`.trim();
+      return `${done ? "Looked up" : "Looking up"} ${nm(a.node_id) ?? ""}`.trim();
     case "bus_neighbors":
-      return `${done ? "Traced" : "Tracing"} what connects to ${str(a.bus_id) ?? "the bus"}`;
+      return `${done ? "Traced" : "Tracing"} what connects to ${nm(a.bus_id) ?? "the bus"}`;
     case "active_alerts":
       return done ? "Checked the active alerts" : "Checking the active alerts";
     case "element_history":
-      return `${done ? "Read" : "Reading"} the history of ${str(a.element_id) ?? "the element"}`;
+      return `${done ? "Read" : "Reading"} the history of ${nm(a.element_id) ?? "the element"}`;
     case "n1_contingency_analysis":
       return done ? "Tested every single outage (N-1)" : "Testing every single outage (N-1)";
     case "what_if":
-      return whatIfStep(a, done);
+      return whatIfStep(a, done, nameOf);
     case "simulation_status":
       return done ? "Checked the running simulation" : "Checking the running simulation";
     case "forecast_deviation_triage":
@@ -67,13 +77,16 @@ export function describeStep(toolName: string, args: Args, running = false): str
   }
 }
 
-function whatIfStep(a: Record<string, unknown>, done: boolean): string {
-  const t = str(a.target);
+function whatIfStep(a: Record<string, unknown>, done: boolean, nameOf: NameOf = idOnly): string {
+  const raw = str(a.target);
+  const t = raw == null ? null : nameOf(raw);
   switch (a.op) {
     case "trip_line":
       return `${done ? "Simulated" : "Simulating"} line ${t ?? ""} tripping`.trim();
     case "trip_bus":
-      return `${done ? "Simulated" : "Simulating"} losing bus ${t ?? ""}`.trim();
+      return `${done ? "Simulated" : "Simulating"} losing ${t ?? "a bus"}`.trim();
+    case "trip_gen":
+      return `${done ? "Simulated" : "Simulating"} the generation at ${t ?? "a bus"} tripping`.trim();
     case "scale_load":
       return `${done ? "Simulated" : "Simulating"} load at ${Math.round(Number(a.factor ?? 1) * 100)}%`;
     case "undo":
@@ -118,7 +131,7 @@ type PartLike = {
  * read a hypothetical grid: an operator simulation was on when it was asked,
  * the agent's own what-if sandbox held a move at the time, or it is a what-if.
  */
-export function buildSteps(parts: readonly PartLike[], operatorSim: boolean): Step[] {
+export function buildSteps(parts: readonly PartLike[], operatorSim: boolean, nameOf: NameOf = idOnly): Step[] {
   let sandbox = false;
   const steps: Step[] = [];
   for (const p of parts) {
@@ -135,7 +148,7 @@ export function buildSteps(parts: readonly PartLike[], operatorSim: boolean): St
     }
     const ts = str(args?.timestamp) ?? str(args?.day);
     steps.push({
-      text: describeStep(p.toolName, args, running),
+      text: describeStep(p.toolName, args, running, nameOf),
       hour: ts ? fmtTs(ts) : null,
       source,
       running,
@@ -167,6 +180,13 @@ function useAskedAbout() {
   return snap;
 }
 
+/** Display-name lookup from the map's element registry (falls back to the id). */
+function useNameOf(): NameOf {
+  const ctx = useContext(GridRefContext);
+  if (!ctx) return idOnly;
+  return (id) => ctx.label(id.startsWith("bus_") ? "node" : "line", id);
+}
+
 /**
  * Shown in place of the collapsed tool group while the agent is working: each
  * lookup as it happens, so a slow answer is never a blank spinner, and a Stop
@@ -176,7 +196,8 @@ export const LiveSteps: FC<{ indices: readonly number[] }> = ({ indices }) => {
   const parts = useAuiState((s) => s.message.parts) as readonly PartLike[];
   const asked = useAskedAbout();
   const thread = useThreadRuntime();
-  const steps = buildSteps(indices.map((i) => parts[i]).filter(Boolean), asked.sim);
+  const nameOf = useNameOf();
+  const steps = buildSteps(indices.map((i) => parts[i]).filter(Boolean), asked.sim, nameOf);
 
   return (
     <div className="rounded-lg border border-agent-border bg-agent-surface/40 px-3 py-2.5" aria-live="polite">
@@ -220,8 +241,9 @@ export const EvidenceTrail: FC = () => {
   const running = useAuiState((s) => s.message.status?.type === "running");
   const asked = useAskedAbout();
   const [open, setOpen] = useState(false);
+  const nameOf = useNameOf();
   if (running) return null;
-  const steps = buildSteps(parts, asked.sim);
+  const steps = buildSteps(parts, asked.sim, nameOf);
   if (!steps.length) return null;
 
   const nSim = steps.filter((s) => s.source === "Simulation").length;

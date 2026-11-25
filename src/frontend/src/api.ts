@@ -80,6 +80,7 @@ export const api = {
     timestamp: string;
     disconnect_lines?: string[];
     trip_nodes?: string[];
+    trip_gens?: string[];
     load_scale?: number;
   }): Promise<WhatIfResponse> =>
     fetch("/api/whatif", {
