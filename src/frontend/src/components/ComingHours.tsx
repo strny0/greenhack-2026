@@ -51,7 +51,7 @@ export default function ComingHours({
       <div className="flex w-[92px] shrink-0 flex-col justify-center leading-tight">
         <span className="text-[13px] font-medium">Coming hours</span>
         <span className="text-[11px] text-muted-foreground">
-          {simulating ? "simulated" : "recorded"}, vs now
+          {simulating ? "simulated, vs now" : "recorded data, not a forecast"}
         </span>
       </div>
       {next.length === 0 && (

@@ -53,6 +53,10 @@ export function describeStep(toolName: string, args: Args, running = false, name
       return whatIfStep(a, done, nameOf);
     case "simulation_status":
       return done ? "Checked the running simulation" : "Checking the running simulation";
+    case "reserves":
+      return done ? "Checked the generation reserve" : "Checking the generation reserve";
+    case "voltage_setpoints":
+      return done ? "Read the voltage set-points" : "Reading the voltage set-points";
     case "forecast_deviation_triage":
       return done ? "Compared the plan with what happened" : "Comparing the plan with what happened";
     case "weather_overlay":
@@ -89,6 +93,16 @@ function whatIfStep(a: Record<string, unknown>, done: boolean, nameOf: NameOf = 
       return `${done ? "Simulated" : "Simulating"} the generation at ${t ?? "a bus"} tripping`.trim();
     case "scale_load":
       return `${done ? "Simulated" : "Simulating"} load at ${Math.round(Number(a.factor ?? 1) * 100)}%`;
+    case "redispatch": {
+      const mw = Number(a.factor ?? 0);
+      return `${done ? "Simulated" : "Simulating"} ${t ?? "a plant"} ${mw >= 0 ? "up" : "down"} ${Math.abs(Math.round(mw))} MW`;
+    }
+    case "set_voltage":
+      return `${done ? "Simulated" : "Simulating"} the voltage set-point at ${t ?? "a bus"} at ${Number(a.factor ?? 0).toFixed(2)} p.u.`;
+    case "add_reactive": {
+      const q = Number(a.factor ?? 0);
+      return `${done ? "Simulated" : "Simulating"} ${q >= 0 ? "a capacitor" : "a reactor"} of ${Math.abs(Math.round(q))} Mvar at ${t ?? "a bus"}`;
+    }
     case "undo":
       return done ? "Undid the last simulated change" : "Undoing the last simulated change";
     case "reset":
@@ -108,6 +122,7 @@ function fmtTs(ts: string): string {
 const CURRENT_HOUR_TOOLS = new Set([
   "grid_summary", "most_loaded_lines", "line_detail", "node_detail", "bus_neighbors",
   "active_alerts", "explain_hour", "loading_context", "deep_dive", "simulation_status",
+  "reserves",
 ]);
 
 export interface Step {
@@ -181,7 +196,7 @@ function useAskedAbout() {
 }
 
 /** Display-name lookup from the map's element registry (falls back to the id). */
-function useNameOf(): NameOf {
+export function useNameOf(): NameOf {
   const ctx = useContext(GridRefContext);
   if (!ctx) return idOnly;
   return (id) => ctx.label(id.startsWith("bus_") ? "node" : "line", id);

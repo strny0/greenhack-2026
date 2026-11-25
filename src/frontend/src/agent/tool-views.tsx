@@ -90,7 +90,7 @@ function ElementChip({ id, children }: { id: string; children?: ReactNode }) {
     return (
       <span
         className={cn(
-          "mx-px inline-flex items-center gap-1 rounded border px-1.5 py-px align-baseline font-mono text-[0.82em]",
+          "mx-px inline-flex items-center gap-1 rounded border px-1.5 py-px align-baseline text-[0.82em]",
           "border-border bg-muted/60 text-foreground",
         )}
       >
@@ -101,7 +101,7 @@ function ElementChip({ id, children }: { id: string; children?: ReactNode }) {
     <span
       onDoubleClick={() => ctx!.jump(kind, id)}
       className={cn(
-        "mx-px inline-flex items-center gap-1 rounded border pr-0.5 pl-1.5 align-baseline font-mono text-[0.82em] transition-colors",
+        "mx-px inline-flex items-center gap-1 rounded border pr-0.5 pl-1.5 align-baseline text-[0.82em] transition-colors",
         "border-border bg-muted/60 text-foreground hover:border-ring hover:bg-accent",
       )}
     >

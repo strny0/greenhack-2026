@@ -19,6 +19,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
+import { describeStep, useNameOf } from "@/agent/evidence";
 
 const ANIMATION_DURATION = 200;
 
@@ -92,11 +93,14 @@ const statusIconMap: Record<ToolStatus, React.ElementType> = {
 
 function ToolFallbackTrigger({
   toolName,
+  description,
   status,
   className,
   ...props
 }: React.ComponentProps<typeof CollapsibleTrigger> & {
   toolName: string;
+  /** The call in plain words ("Simulated line X tripping"); falls back to the tool name. */
+  description?: string;
   status?: ToolCallMessagePartStatus;
 }) {
   const statusType = status?.type ?? "complete";
@@ -105,7 +109,11 @@ function ToolFallbackTrigger({
     status?.type === "incomplete" && status.reason === "cancelled";
 
   const Icon = statusIconMap[statusType];
-  const label = isCancelled ? "Cancelled tool" : "Used tool";
+  const text = description
+    ? isCancelled
+      ? `Cancelled: ${description}`
+      : description
+    : `${isCancelled ? "Cancelled tool" : "Used tool"}: ${toolName}`;
 
   return (
     <CollapsibleTrigger
@@ -127,20 +135,18 @@ function ToolFallbackTrigger({
       <span
         data-slot="tool-fallback-trigger-label"
         className={cn(
-          "aui-tool-fallback-trigger-label-wrapper relative inline-block grow text-start leading-none",
+          "aui-tool-fallback-trigger-label-wrapper relative inline-block grow text-start leading-snug",
           isCancelled && "text-muted-foreground line-through",
         )}
       >
-        <span>
-          {label}: <b>{toolName}</b>
-        </span>
+        <span>{text}</span>
         {isRunning && (
           <span
             aria-hidden
             data-slot="tool-fallback-trigger-shimmer"
             className="aui-tool-fallback-trigger-shimmer shimmer pointer-events-none absolute inset-0 motion-reduce:animate-none"
           >
-            {label}: <b>{toolName}</b>
+            {text}
           </span>
         )}
       </span>
@@ -270,18 +276,26 @@ function ToolFallbackError({
 
 const ToolFallbackImpl: ToolCallMessagePartComponent = ({
   toolName,
+  args,
   argsText,
   result,
   status,
 }) => {
   const isCancelled =
     status?.type === "incomplete" && status.reason === "cancelled";
+  const nameOf = useNameOf();
+  const description = describeStep(
+    toolName,
+    args as Record<string, unknown> | undefined,
+    status?.type === "running",
+    nameOf,
+  );
 
   return (
     <ToolFallbackRoot
       className={cn(isCancelled && "border-muted-foreground/30 bg-muted/30")}
     >
-      <ToolFallbackTrigger toolName={toolName} status={status} />
+      <ToolFallbackTrigger toolName={toolName} description={description} status={status} />
       <ToolFallbackContent>
         <ToolFallbackError status={status} />
         <ToolFallbackArgs

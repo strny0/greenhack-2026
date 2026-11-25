@@ -102,3 +102,13 @@ body {
   letter-spacing: -0.005em;
 }
 .aui-user-message-content { font-size: 16px; }
+/* The agent's reasoning is a working note, not the answer: small and muted,
+   without the answer's large first line. */
+[data-slot="aui_assistant-message-content"] :is(.aui-reasoning-content, .aui-narration) { font-size: 13px; line-height: 1.5; }
+[data-slot="aui_assistant-message-content"] .aui-narration { margin-bottom: 0.5rem; color: var(--muted-foreground); }
+[data-slot="aui_assistant-message-content"] :is(.aui-reasoning-content, .aui-narration) .aui-md > .aui-md-p:first-child {
+  font-size: inherit;
+  line-height: inherit;
+  font-weight: inherit;
+  letter-spacing: normal;
+}

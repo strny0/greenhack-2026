@@ -339,8 +339,8 @@ function N1Tab({ ts, labels, onFocus, onSelect }: { ts: string; labels: Record<s
   return (
     <>
       <Note>
-        Deterministic N-1 security analysis: trip each line, re-solve the load flow, and rank by worst
-        resulting stress. Non-converging trips = islanding / voltage collapse (most critical).
+        Deterministic N-1 security analysis: trip each line, re-solve the load flow, and rank by the
+        busiest remaining line. Non-converging trips = islanding / voltage collapse (most critical).
       </Note>
       <Button className="mb-2.5 w-full" onClick={run} disabled={loading}>
         {loading ? "Running load flows…" : "Run N-1 analysis"}
@@ -350,7 +350,7 @@ function N1Tab({ ts, labels, onFocus, onSelect }: { ts: string; labels: Record<s
           <Item
             key={r.contingency_id}
             onClick={() => {
-              onFocus([r.contingency_id, ...r.overloaded.map((o) => o.id)]);
+              onFocus([r.contingency_id, ...r.overloaded.map((o) => o.id), ...(r.worst_line_id ? [r.worst_line_id] : [])]);
               onSelect({ kind: "line", id: r.contingency_id });
             }}
             title={`trip ${labels[r.contingency_id] ?? r.contingency_name}`}
@@ -367,7 +367,9 @@ function N1Tab({ ts, labels, onFocus, onSelect }: { ts: string; labels: Record<s
               r.converged
                 ? r.n_overloads > 0
                   ? `${r.n_overloads} overloaded: ${r.overloaded.slice(0, 2).map((o) => `${labels[o.id] ?? o.name} ${o.loading_pct}%`).join(", ")}`
-                  : "no overloads — grid survives this contingency"
+                  : r.worst_line_id
+                    ? `no overloads · busiest after: ${labels[r.worst_line_id] ?? r.worst_line_id}`
+                    : "no overloads — grid survives this contingency"
                 : n1FailureText(r)
             }
           />
@@ -383,6 +385,84 @@ const SIM_PRESETS: { key: PresetKey; label: string }[] = [
   { key: "trip_largest_generator", label: "Trip largest generator" },
   { key: "load_surge", label: "Load surge (+50% demand)" },
 ];
+
+type ActionKind = "trip_line" | "trip_gen" | "redispatch" | "set_voltage" | "add_reactive";
+
+interface WhatIfAction {
+  kind: ActionKind;
+  target: string;
+  value?: number;
+  text: string;
+}
+
+const signed = (v: number) => `${v > 0 ? "+" : "−"}${Math.abs(v)}`;
+
+const ACTION_KINDS: Record<
+  ActionKind,
+  {
+    label: string;
+    targets: "line" | "plant" | "bus";
+    targetLabel: string;
+    unit?: string;
+    valueLabel?: string;
+    hint?: string;
+    step?: number;
+    range?: [number, number];
+    defaultValue: string;
+    describe: (name: string, v?: number) => string;
+  }
+> = {
+  trip_line: {
+    label: "Disconnect a line",
+    targets: "line",
+    targetLabel: "Line",
+    defaultValue: "",
+    describe: (n) => `Disconnect ${n}`,
+  },
+  trip_gen: {
+    label: "Trip a generator",
+    targets: "plant",
+    targetLabel: "Plant (all its units trip, local load stays on)",
+    defaultValue: "",
+    describe: (n) => `Trip generation at ${n}`,
+  },
+  redispatch: {
+    label: "Redispatch a plant",
+    targets: "plant",
+    targetLabel: "Plant",
+    unit: "MW",
+    valueLabel: "Change in output",
+    hint: "+ raises, − lowers",
+    step: 10,
+    range: [-5000, 5000],
+    defaultValue: "-100",
+    describe: (n, v = 0) => `Redispatch ${n} ${signed(v)} MW`,
+  },
+  set_voltage: {
+    label: "Change a voltage set-point",
+    targets: "plant",
+    targetLabel: "Plant (its generators' AVR set-point)",
+    unit: "p.u.",
+    valueLabel: "New set-point",
+    hint: "0.90 – 1.20",
+    step: 0.01,
+    range: [0.9, 1.2],
+    defaultValue: "1.05",
+    describe: (n, v = 0) => `Voltage set-point at ${n} → ${v.toFixed(2)} p.u.`,
+  },
+  add_reactive: {
+    label: "Add reactive support",
+    targets: "bus",
+    targetLabel: "Bus",
+    unit: "Mvar",
+    valueLabel: "Shunt size",
+    hint: "+ capacitor, − reactor",
+    step: 10,
+    range: [-1000, 1000],
+    defaultValue: "-50",
+    describe: (n, v = 0) => `${v > 0 ? "Capacitor" : "Reactor"} at ${n} ${signed(v)} Mvar`,
+  },
+};
 
 function WhatIfTab({
   frame,
@@ -405,24 +485,61 @@ function WhatIfTab({
   onActivateSim: (preset: PresetKey) => void;
   onExitSim: () => void;
 }) {
-  const [disc, setDisc] = useState<string>(NONE);
+  const [kind, setKind] = useState<ActionKind>("trip_line");
+  const [target, setTarget] = useState<string>(NONE);
+  const [value, setValue] = useState<string>(ACTION_KINDS.trip_line.defaultValue);
+  const [actions, setActions] = useState<WhatIfAction[]>([]);
   const [scale, setScale] = useState(1.0);
   const [res, setRes] = useState<WhatIfResponse | null>(null);
   const [loading, setLoading] = useState(false);
 
   const lines = useMemo(() => [...frame.lines].sort((a, b) => (b.loading_pct ?? 0) - (a.loading_pct ?? 0)), [frame]);
+  const plants = useMemo(
+    () => frame.nodes.filter((n) => n.production_mw > 0).sort((a, b) => b.production_mw - a.production_mw),
+    [frame],
+  );
+  const buses = useMemo(() => [...frame.nodes].sort((a, b) => labelOf(a).localeCompare(labelOf(b))), [frame]);
+  const spec = ACTION_KINDS[kind];
+  const options =
+    spec.targets === "line"
+      ? lines.map((l) => ({ id: l.id, text: `${labelOf(l)} (${l.loading_pct ?? 0}%)` }))
+      : spec.targets === "plant"
+        ? plants.map((n) => ({ id: n.id, text: `${labelOf(n)} (${Math.round(n.production_mw)} MW, ${n.vm_pu?.toFixed(2) ?? "–"} p.u.)` }))
+        : buses.map((n) => ({ id: n.id, text: `${labelOf(n)} (${n.vm_pu?.toFixed(2) ?? "–"} p.u.)` }));
+  const num = Number(value);
+  const valueOk = !spec.unit || (Number.isFinite(num) && num !== 0 && (!spec.range || (num >= spec.range[0] && num <= spec.range[1])));
+  const canAdd = target !== NONE && valueOk;
+
+  const pickKind = (k: ActionKind) => {
+    setKind(k);
+    setTarget(NONE);
+    setValue(ACTION_KINDS[k].defaultValue);
+  };
+
+  const add = () => {
+    if (!canAdd) return;
+    const name = labels[target] ?? target;
+    const v = spec.unit ? num : undefined;
+    setActions((xs) => [...xs.filter((x) => !(x.kind === kind && x.target === target)), { kind, target, value: v, text: spec.describe(name, v) }]);
+    setTarget(NONE);
+  };
 
   const run = async () => {
     setLoading(true);
     try {
-      const lineId = disc === NONE ? "" : disc;
+      const pick = (k: ActionKind) => actions.filter((x) => x.kind === k);
+      const byBus = (k: ActionKind) => Object.fromEntries(pick(k).map((x) => [x.target, x.value ?? 0]));
       const r = await api.whatif({
         timestamp: frame.timestamp,
-        disconnect_lines: lineId ? [lineId] : [],
+        disconnect_lines: pick("trip_line").map((x) => x.target),
+        trip_gens: pick("trip_gen").map((x) => x.target),
+        redispatch_mw: byBus("redispatch"),
+        gen_vm_pu: byBus("set_voltage"),
+        reactive_mvar: byBus("add_reactive"),
         load_scale: scale,
       });
       setRes(r);
-      const ids = [lineId, ...r.diffs.slice(0, 8).map((d) => d.id)].filter(Boolean);
+      const ids = [...pick("trip_line").map((x) => x.target), ...r.diffs.slice(0, 8).map((d) => d.id)];
       onFocus(ids);
     } finally {
       setLoading(false);
@@ -470,23 +587,82 @@ function WhatIfTab({
         )}
       </div>
 
-      <Note>Apply operator actions and re-run a real load flow. The map highlights what moves.</Note>
-      <div className="mb-2.5">
-        <label className="mb-1 block text-[11px] text-muted-foreground">Disconnect a line</label>
-        <Select value={disc} onValueChange={setDisc}>
-          <SelectTrigger className="w-full">
-            <SelectValue placeholder="— none —" />
+      <Note>
+        Stack operator actions and re-run a real load flow. Lost generation is picked up by every online
+        dispatchable unit in proportion to its size, as governors would. The map highlights what moves.
+      </Note>
+      <div className="mb-2.5 rounded-lg border bg-background p-2.5">
+        <label className="mb-1 block text-[11px] text-muted-foreground">Action</label>
+        <Select value={kind} onValueChange={(v) => pickKind(v as ActionKind)}>
+          <SelectTrigger className="mb-2 w-full">
+            <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value={NONE}>— none —</SelectItem>
-            {lines.map((l) => (
-              <SelectItem key={l.id} value={l.id}>
-                {labelOf(l)} ({l.loading_pct ?? 0}%)
+            {(Object.keys(ACTION_KINDS) as ActionKind[]).map((k) => (
+              <SelectItem key={k} value={k}>
+                {ACTION_KINDS[k].label}
               </SelectItem>
             ))}
           </SelectContent>
         </Select>
+        <label className="mb-1 block text-[11px] text-muted-foreground">{spec.targetLabel}</label>
+        <Select value={target} onValueChange={setTarget}>
+          <SelectTrigger className="mb-2 w-full">
+            <SelectValue placeholder="— choose —" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={NONE}>— choose —</SelectItem>
+            {options.map((o) => (
+              <SelectItem key={o.id} value={o.id}>
+                {o.text}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {spec.unit && (
+          <>
+            <label className="mb-1 flex items-center justify-between text-[11px] text-muted-foreground">
+              <span>{spec.valueLabel}</span>
+              <span>{spec.hint}</span>
+            </label>
+            <div className="mb-2 flex items-center gap-2">
+              <input
+                type="number"
+                inputMode="decimal"
+                step={spec.step}
+                value={value}
+                onChange={(e) => setValue(e.target.value)}
+                aria-label={spec.valueLabel}
+                className={cn(
+                  "h-9 w-full rounded-md border bg-background px-2 text-[13px] tabular-nums outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  !valueOk && "border-red-500",
+                )}
+              />
+              <span className="w-10 shrink-0 text-[12px] text-muted-foreground">{spec.unit}</span>
+            </div>
+          </>
+        )}
+        <Button variant="outline" className="w-full" onClick={add} disabled={!canAdd}>
+          Add action
+        </Button>
       </div>
+      {actions.length > 0 && (
+        <div className="mb-2.5 flex flex-col gap-1">
+          {actions.map((x) => (
+            <div key={`${x.kind}:${x.target}`} className="flex items-center gap-2 rounded-md border bg-background px-2 py-1.5 text-[12px]">
+              <span className="min-w-0 flex-1 truncate" title={x.text}>{x.text}</span>
+              <button
+                type="button"
+                aria-label={`Remove: ${x.text}`}
+                onClick={() => setActions((xs) => xs.filter((y) => y !== x))}
+                className="shrink-0 rounded px-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="mb-2.5">
         <label className="mb-1 flex items-center justify-between text-[11px] text-muted-foreground">
           <span>Load multiplier</span>
@@ -494,7 +670,7 @@ function WhatIfTab({
         </label>
         <Slider min={0.8} max={1.6} step={0.05} value={[scale]} onValueChange={(v) => setScale(v[0])} />
       </div>
-      <Button className="mb-2.5 w-full" onClick={run} disabled={loading}>
+      <Button className="mb-2.5 w-full" onClick={run} disabled={loading || (actions.length === 0 && scale === 1)}>
         {loading ? "Solving…" : "Run scenario"}
       </Button>
       {res && (
@@ -514,6 +690,24 @@ function WhatIfTab({
               </>
             }
           />
+          {res.pickup && Math.abs(res.pickup.imbalance_mw) >= 1 && (
+            <Item
+              title={res.pickup.imbalance_mw > 0 ? "Who picked up the lost power" : "Who backed down"}
+              pill={<Pill tone="ok">{Math.round(Math.abs(res.pickup.imbalance_mw)).toLocaleString()} MW</Pill>}
+              desc={
+                <>
+                  {Math.round(Math.abs(res.pickup.shared_mw)).toLocaleString()} MW shared by {res.pickup.n_units ?? res.pickup.units.length} units
+                  {Math.abs(res.pickup.slack_mw) >= 1 && <>, {Math.round(Math.abs(res.pickup.slack_mw)).toLocaleString()} MW left to the slack</>}
+                  {res.pickup.units.length > 0 && (
+                    <>
+                      {" "}· most at{" "}
+                      {[...new Set(res.pickup.units.map((u) => u.bus))].slice(0, 3).map((b) => labels[b] ?? b).join(", ")}
+                    </>
+                  )}
+                </>
+              }
+            />
+          )}
           <SectionTitle>Biggest loading changes</SectionTitle>
           {res.diffs.slice(0, 10).map((d) => (
             <Item
